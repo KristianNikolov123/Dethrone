@@ -20,6 +20,9 @@ const YOUTUBE_API_KEY = (process.env.YOUTUBE_API_KEY || '').trim();
 const DUEL_SECONDS = Number(process.env.DUEL_SECONDS || 120);   // колко трае един дуел
 const BREAK_SECONDS = Number(process.env.BREAK_SECONDS || 20);  // пауза между дуелите
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 20);
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';           // зад хостинг/прокси: IP адресът идва от X-Forwarded-For
+const MAX_STREAMS_PER_IP = Number(process.env.MAX_STREAMS_PER_IP || 30);
+const SEARCHES_PER_DAY = Number(process.env.SEARCHES_PER_DAY || 95); // безплатният лимит на YouTube е около 100
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -49,10 +52,39 @@ function loadDb() {
 }
 let db = loadDb();
 
+// Записът на диска става на заден план, най-много веднъж в секунда, вместо при всеки глас.
+// При спиране на сървъра (Ctrl+C) всичко се записва веднага.
+let saveTimer = null;
+let saving = false;
+let saveAgain = false;
 function save() {
-  const tmp = DB_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-  fs.renameSync(tmp, DB_FILE);
+  if (!saveTimer) saveTimer = setTimeout(flushSave, 1000);
+}
+async function flushSave() {
+  saveTimer = null;
+  if (saving) { saveAgain = true; return; }
+  saving = true;
+  try {
+    const tmp = DB_FILE + '.tmp';
+    await fs.promises.writeFile(tmp, JSON.stringify(db));
+    await fs.promises.rename(tmp, DB_FILE);
+  } catch (e) {
+    console.error('Записът на базата не мина:', e.message);
+  } finally {
+    saving = false;
+    if (saveAgain) { saveAgain = false; save(); }
+  }
+}
+function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  try {
+    fs.writeFileSync(DB_FILE + '.tmp', JSON.stringify(db));
+    fs.renameSync(DB_FILE + '.tmp', DB_FILE);
+  } catch (e) { console.error('Записът на базата не мина:', e.message); }
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => { saveNow(); process.exit(0); });
 }
 
 const newId = () => crypto.randomBytes(6).toString('hex');
@@ -68,11 +100,14 @@ const MAX_TIP = 50;  // €
 const ANON = 'Анонимен';
 const artistKey = (name) => String(name || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
+// fanVersion се увеличава при всяка промяна на точките или имената, за да знаем кога да преизчислим класациите
+let fanVersion = 0;
 function rememberFan(voterId, name) {
   if (!voterId) return;
   const n = clean(name, 30);
-  const fan = db.fans[voterId] || (db.fans[voterId] = { name: ANON });
-  if (n && n !== ANON) fan.name = n;
+  let fan = db.fans[voterId];
+  if (!fan) { fan = db.fans[voterId] = { name: ANON }; fanVersion++; }
+  if (n && n !== ANON && fan.name !== n) { fan.name = n; fanVersion++; }
 }
 const fanName = (voterId) => (db.fans[voterId] && db.fans[voterId].name) || ANON;
 
@@ -82,6 +117,7 @@ function bumpFan(artist, voterId, field, amount) {
   const board = db.fanStats[key] || (db.fanStats[key] = {});
   const st = board[voterId] || (board[voterId] = { votes: 0, tips: 0 });
   st[field] += amount;
+  fanVersion++;
 }
 
 // Всички фенове с точки, включително анонимните (точките им се пазят, ако по-късно си сложат име)
@@ -95,9 +131,16 @@ function fanBoardAll(artist) {
 // Публичната класация показва само фенове с име
 const fanBoard = (artist) => fanBoardAll(artist).filter((f) => f.name !== ANON);
 
+// Най-големият фен се пази в кеш, докато точките не се променят
+const bigFanCache = new Map();
 function biggestFanOf(artist) {
-  const top = fanBoard(artist)[0];
-  return top ? { voterId: top.voterId, name: top.name, score: top.score } : null;
+  const key = artistKey(artist);
+  const hit = bigFanCache.get(key);
+  if (hit && hit.v === fanVersion) return hit.top;
+  const first = fanBoard(artist)[0];
+  const top = first ? { voterId: first.voterId, name: first.name, score: first.score } : null;
+  bigFanCache.set(key, { v: fanVersion, top });
+  return top;
 }
 
 // ---------- YouTube ----------
@@ -378,11 +421,73 @@ function publicState(voterId) {
 }
 
 // ---------- Живи обновления (Server-Sent Events) ----------
+// Промените се събират и се пращат най-много 4 пъти в секунда, директно с данните,
+// така че браузърите не питат сървъра наново. Гласовете се пращат като малко отделно
+// съобщение само с броя, а цялото състояние само когато се промени нещо друго.
 const clients = new Set();
+const streamsPerIp = new Map();
+const pendingKinds = { state: false, votes: false, library: false };
+let flushTimer = null;
+const FLUSH_MS = 250;
+
 function broadcast(kind = 'state') {
-  for (const c of clients) c.write(`event: ${kind}\ndata: ${Date.now()}\n\n`);
+  pendingKinds[kind] = true;
+  if (!flushTimer) flushTimer = setTimeout(flushBroadcast, FLUSH_MS);
 }
-setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000);
+function sendAll(message) {
+  for (const c of clients) {
+    // Браузър, който не смогва да приема (много бавна връзка), се изключва; ще се свърже наново сам
+    if (c.writableLength > 1024 * 1024) { c.destroy(); clients.delete(c); continue; }
+    c.write(message);
+  }
+}
+function flushBroadcast() {
+  flushTimer = null;
+  if (pendingKinds.state) {
+    pendingKinds.state = false;
+    pendingKinds.votes = false;
+    const payload = JSON.stringify(withViewer(null, () => publicState(null)));
+    sendAll(`event: state\ndata: ${payload}\n\n`);
+  } else if (pendingKinds.votes) {
+    pendingKinds.votes = false;
+    if (db.duel) sendAll(`event: votes\ndata: ${JSON.stringify({ duelId: db.duel.id, counts: voteCounts(db.duel) })}\n\n`);
+  }
+  if (pendingKinds.library) {
+    pendingKinds.library = false;
+    sendAll(`event: library\ndata: ${Date.now()}\n\n`);
+  }
+}
+setInterval(() => sendAll('event: ping\ndata: 1\n\n'), 20000);
+
+// ---------- Ограничения на заявките ----------
+// Пазят от тролове и случайно претоварване. Адресите на самия компютър (localhost) не се ограничават.
+const buckets = new Map();
+function allow(key, max, perMs) {
+  const now = Date.now();
+  let b = buckets.get(key);
+  if (!b || now - b.start > perMs) { b = { start: now, n: 0 }; buckets.set(key, b); }
+  b.n++;
+  return b.n <= max;
+}
+function limit(key, max, perMs, message) {
+  if (!allow(key, max, perMs)) throw new HttpError(429, message || 'Твърде много заявки. Изчакай малко и опитай пак.');
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of buckets) if (now - b.start > 24 * 3600e3) buckets.delete(k);
+}, 600e3);
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const f = req.headers['x-forwarded-for'];
+    if (f) return String(f).split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || '';
+}
+const isLocal = (ip) => ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+function limitIp(req, name, max, perMs, message) {
+  const ip = clientIp(req);
+  if (!isLocal(ip)) limit(`${name}:${ip}`, max, perMs, message);
+}
 
 // ---------- Логика на дуелите ----------
 function startDuel(now) {
@@ -542,11 +647,27 @@ async function handleApi(req, res, url) {
   const m = req.method;
 
   if (m === 'GET' && p === '/api/events') {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write('retry: 3000\n\n');
+    const ip = clientIp(req);
+    const open = streamsPerIp.get(ip) || 0;
+    if (!isLocal(ip) && open >= MAX_STREAMS_PER_IP) throw new HttpError(429, 'Твърде много отворени прозорци от един адрес.');
+    streamsPerIp.set(ip, open + 1);
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',  // за да не задържа nginx съобщенията
+    });
+    // Ако много браузъри се свържат наново наведнъж (рестарт), се разпределят в рамките на няколко секунди
+    res.write(`retry: ${2000 + Math.floor(Math.random() * 4000)}\n\n`);
     clients.add(res);
-    req.on('close', () => clients.delete(res));
+    req.on('close', () => {
+      clients.delete(res);
+      const n = (streamsPerIp.get(ip) || 1) - 1;
+      if (n <= 0) streamsPerIp.delete(ip); else streamsPerIp.set(ip, n);
+    });
     return;
+  }
+
+  if (m === 'GET' && p === '/api/health') {
+    return sendJson(res, 200, { ok: true, listeners: clients.size, uptime: Math.round(process.uptime()) });
   }
 
   if (m === 'GET' && p === '/api/state') {
@@ -569,6 +690,13 @@ async function handleApi(req, res, url) {
         needsKey: true,
       });
     }
+    // Лимитът се брои само за нови търсения; повторените идват от кеша и са безплатни
+    const cached = searchCache.get(q.toLowerCase());
+    if (!cached || Date.now() - cached.at >= SEARCH_TTL) {
+      limitIp(req, 'search', 15, 10 * 60e3, 'Твърде много търсения за кратко време. Изчакай няколко минути.');
+      limit('search:all-day', SEARCHES_PER_DAY, 24 * 3600e3,
+        'Търсенето за днес е изчерпано (безплатният лимит на YouTube). Дотогава можеш да поставиш линк.');
+    }
     const results = await youtubeSearch(q);
     return sendJson(res, 200, {
       results: results.map((r) => {
@@ -581,6 +709,7 @@ async function handleApi(req, res, url) {
   // Начало и край на песента. Може да ги променя този, който е добавил песента.
   const trimMatch = p.match(/^\/api\/songs\/([a-f0-9]{12})\/trim$/);
   if (m === 'POST' && trimMatch) {
+    limitIp(req, 'trim', 30, 10 * 60e3);
     const body = await readJson(req);
     const song = songById(trimMatch[1]);
     const voterId = clean(body.voterId, 64);
@@ -609,6 +738,7 @@ async function handleApi(req, res, url) {
 
   // Добавяне на песен от YouTube
   if (m === 'POST' && p === '/api/songs') {
+    limitIp(req, 'add', 15, 10 * 60e3, 'Добави твърде много песни за кратко време. Изчакай няколко минути.');
     const body = await readJson(req);
     const videoId = youtubeId(body.url);
     if (!videoId) throw new HttpError(400, 'Невалиден YouTube линк.');
@@ -649,6 +779,7 @@ async function handleApi(req, res, url) {
     if (!AUDIO_EXT.includes(ext)) throw new HttpError(400, 'Позволени формати: mp3, m4a, aac, wav, ogg, opus.');
     if (!title || !artist) throw new HttpError(400, 'Въведи име на песента и артист.');
     if (q.get('original') !== 'true') throw new HttpError(400, 'Потвърди, че песента е твоя оригинална музика.');
+    limitIp(req, 'upload', 6, 3600e3, 'Можеш да качиш до 6 песни на час.');
     const file = await receiveUpload(req, ext);
     const adderId = clean(q.get('voterId'), 64) || null;
     const song = {
@@ -664,6 +795,7 @@ async function handleApi(req, res, url) {
 
   // Предизвикване на трона
   if (m === 'POST' && p === '/api/challenge') {
+    limitIp(req, 'challenge', 10, 10 * 60e3, 'Предизвика трона твърде много пъти за кратко време. Изчакай малко.');
     const body = await readJson(req);
     const song = songById(body.songId);
     if (!song) throw new HttpError(404, 'Няма такава песен.');
@@ -691,14 +823,18 @@ async function handleApi(req, res, url) {
     if (voterId.length < 8) throw new HttpError(400, 'Невалиден гласоподавател.');
     if (body.side !== 'champion' && body.side !== 'challenger') throw new HttpError(400, 'Невалиден избор.');
     if (body.duelId && body.duelId !== db.duel.id) throw new HttpError(400, 'Дуелът вече приключи.');
+    limit(`vote:${voterId}`, 10, 10e3, 'Сменяш гласа твърде често. Изчакай няколко секунди.');
+    limitIp(req, 'vote', 120, 60e3);
+    const changed = db.duel.votes[voterId] !== body.side;
     db.duel.votes[voterId] = body.side;
     rememberFan(voterId, body.name);
-    save(); broadcast('state');
-    return sendJson(res, 200, { ok: true });
+    if (changed) { save(); broadcast('votes'); }
+    return sendJson(res, 200, { ok: true, duelId: db.duel.id, side: body.side });
   }
 
   // Бакшиш (ТЕСТОВ РЕЖИМ: не се теглят реални пари)
   if (m === 'POST' && p === '/api/tip') {
+    limitIp(req, 'tip', 20, 10 * 60e3);
     const body = await readJson(req);
     const song = songById(body.songId);
     const amount = Math.round(Number(body.amount));

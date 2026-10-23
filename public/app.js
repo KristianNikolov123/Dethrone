@@ -33,7 +33,13 @@
   let libFilter = 'all';
   const songIndex = new Map();
   const serverNow = () => Date.now() + skew;
-  const indexSongs = (list) => { for (const s of list) if (s) songIndex.set(s.id, s); };
+  const indexSongs = (list) => {
+    for (const s of list) {
+      if (!s) continue;
+      if (s.canEdit) myEditable.add(s.id);
+      songIndex.set(s.id, s);
+    }
+  };
 
   function fmt(ms) {
     let s = Math.max(0, Math.floor(ms / 1000));
@@ -72,31 +78,75 @@
   const artistLink = (name) => `<button class="link" data-artist="${esc(name)}">${esc(name)}</button>`;
 
   // ---------- Данни ----------
-  async function refresh() {
-    try {
-      const s = await api('/api/state?voterId=' + encodeURIComponent(voterId));
-      skew = s.now - Date.now();
-      state = s;
-      indexSongs([s.throne?.song, s.duel?.champion, s.duel?.challenger, ...s.queue.map((q) => q.song)]);
-      render();
-      syncPlayer();
-      const lastDuelAt = s.recentDuels[0]?.at || 0;
-      if (lastDuelAt !== refresh.lastDuelAt) { refresh.lastDuelAt = lastDuelAt; loadBadges(); }
-    } catch (e) { console.error(e); }
+  // Сървърът праща цялото състояние с всяко обновление, общо за всички. Личните неща
+  // (за коя песен си гласувал, кои песни можеш да редактираш) браузърът ги помни сам.
+  const myVotes = {};            // дуел → страна, за която си гласувал
+  const myEditable = new Set();  // песни, които си добавил ти
+
+  function markMine(song) {
+    if (song && !song.canEdit && myEditable.has(song.id)) song.canEdit = true;
+    return song;
   }
+
+  function applyState(s) {
+    skew = s.now - Date.now();
+    if (s.duel) {
+      if (s.duel.myVote) myVotes[s.duel.id] = s.duel.myVote;
+      s.duel.myVote = myVotes[s.duel.id] || null;
+    }
+    [s.throne?.song, s.duel?.champion, s.duel?.challenger, ...s.queue.map((q) => q.song)].forEach(markMine);
+    state = s;
+    indexSongs([s.throne?.song, s.duel?.champion, s.duel?.challenger, ...s.queue.map((q) => q.song)]);
+    render();
+    syncPlayer();
+    const lastDuelAt = s.recentDuels[0]?.at || 0;
+    if (lastDuelAt !== applyState.lastDuelAt) { applyState.lastDuelAt = lastDuelAt; loadBadges(); }
+  }
+
+  // Пълното състояние заедно с личните данни: при отваряне на страницата и след собствени действия
+  async function refresh() {
+    try { applyState(await api('/api/state?voterId=' + encodeURIComponent(voterId))); }
+    catch (e) { console.error(e); }
+  }
+
   async function loadLibrary() {
     try {
       library = (await api('/api/songs?voterId=' + encodeURIComponent(voterId))).songs;
+      for (const s of library) if (s.canEdit) myEditable.add(s.id);
       indexSongs(library);
       renderLibrary();
+      if (state) updateTransport();
     } catch (e) { console.error(e); }
   }
 
+  // Само броят на гласовете се промени: обновяваме само дуела
+  function applyVotes(v) {
+    if (!state?.duel || state.duel.id !== v.duelId) return;
+    state.duel.counts = v.counts;
+    renderDuel();
+    updateTimers();
+  }
+
+  let lastEventAt = Date.now();
   const es = new EventSource('/api/events');
-  es.addEventListener('state', refresh);
-  es.addEventListener('library', loadLibrary);
-  es.addEventListener('open', () => { refresh(); loadLibrary(); });
-  setInterval(refresh, 15000);
+  es.addEventListener('state', (e) => {
+    lastEventAt = Date.now();
+    try { applyState(JSON.parse(e.data)); } catch { refresh(); }
+  });
+  es.addEventListener('votes', (e) => {
+    lastEventAt = Date.now();
+    try { applyVotes(JSON.parse(e.data)); } catch { /* ignore */ }
+  });
+  // Списъкът с песни се тегли наново с малко случайно забавяне, за да не питат всички едновременно
+  let libraryTimer = null;
+  es.addEventListener('library', () => {
+    lastEventAt = Date.now();
+    if (!libraryTimer) libraryTimer = setTimeout(() => { libraryTimer = null; loadLibrary(); }, Math.random() * 1500);
+  });
+  es.addEventListener('ping', () => { lastEventAt = Date.now(); });
+  es.addEventListener('open', () => { lastEventAt = Date.now(); refresh(); loadLibrary(); });
+  // Резервно: ако връзката е мълчала дълго, питаме сами
+  setInterval(() => { if (Date.now() - lastEventAt > 45000) refresh(); }, 15000);
 
   // ---------- Рендериране ----------
   function render() {
@@ -775,8 +825,14 @@
 
   async function vote(side) {
     try {
-      await post('/api/vote', { voterId, side, duelId: state?.duel?.id, name: nick() });
-      refresh();
+      const r = await post('/api/vote', { voterId, side, duelId: state?.duel?.id, name: nick() });
+      // Гласът се отбелязва веднага; новият брой гласове идва с живото обновление
+      myVotes[r.duelId] = r.side;
+      if (state?.duel && state.duel.id === r.duelId) {
+        state.duel.myVote = r.side;
+        renderDuel();
+        updateTimers();
+      }
     } catch (e) { toast(e.message, true); }
   }
 
