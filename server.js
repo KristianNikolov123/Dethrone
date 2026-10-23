@@ -26,7 +26,9 @@ const emptyDb = () => ({
   queue: [],      // {songId, challengedBy, at}
   reigns: [],     // завършили царувания {songId,start,end}
   duels: [],      // история {id,championId,challengerId,challengedBy,counts,winner,at}
-  tips: [],       // тестови бакшиши {songId,amount,by,at}
+  tips: [],       // тестови бакшиши {id,songId,artist,amount,by,voterId,message,at}
+  fans: {},       // {voterId: {name}}
+  fanStats: {},   // {artistKey: {voterId: {votes, tips}}}
   nextDuelAt: 0,
 });
 
@@ -45,6 +47,47 @@ function save() {
 const newId = () => crypto.randomBytes(6).toString('hex');
 const songById = (id) => db.songs.find((s) => s.id === id) || null;
 const clean = (v, max = 80) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
+
+// ---------- Фенове и „Най-голям фен“ ----------
+// Точки: 1 за всеки глас за песен на артиста, 3 за всяко евро бакшиш.
+const POINTS_PER_VOTE = 1;
+const POINTS_PER_EURO = 3;
+const MIN_TIP = 1;   // €
+const MAX_TIP = 50;  // €
+const ANON = 'Анонимен';
+const artistKey = (name) => String(name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+function rememberFan(voterId, name) {
+  if (!voterId) return;
+  const n = clean(name, 30);
+  const fan = db.fans[voterId] || (db.fans[voterId] = { name: ANON });
+  if (n && n !== ANON) fan.name = n;
+}
+const fanName = (voterId) => (db.fans[voterId] && db.fans[voterId].name) || ANON;
+
+function bumpFan(artist, voterId, field, amount) {
+  if (!voterId) return;
+  const key = artistKey(artist);
+  const board = db.fanStats[key] || (db.fanStats[key] = {});
+  const st = board[voterId] || (board[voterId] = { votes: 0, tips: 0 });
+  st[field] += amount;
+}
+
+// Всички фенове с точки, включително анонимните (точките им се пазят, ако по-късно си сложат име)
+function fanBoardAll(artist) {
+  const board = db.fanStats[artistKey(artist)] || {};
+  return Object.entries(board)
+    .map(([voterId, st]) => ({ voterId, name: fanName(voterId), votes: st.votes, tips: st.tips, score: st.votes * POINTS_PER_VOTE + st.tips * POINTS_PER_EURO }))
+    .filter((f) => f.score > 0)
+    .sort((a, b) => b.score - a.score || b.tips - a.tips || b.votes - a.votes);
+}
+// Публичната класация показва само фенове с име
+const fanBoard = (artist) => fanBoardAll(artist).filter((f) => f.name !== ANON);
+
+function biggestFanOf(artist) {
+  const top = fanBoard(artist)[0];
+  return top ? { voterId: top.voterId, name: top.name, score: top.score } : null;
+}
 
 // ---------- YouTube ----------
 function youtubeId(input) {
@@ -89,6 +132,17 @@ function songView(s) {
     original: s.type === 'audio', addedBy: s.addedBy,
     duelWins: s.duelWins || 0, defenses: s.defenses || 0, tipsTotal: s.tipsTotal || 0,
     createdAt: s.createdAt,
+    biggestFan: (biggestFanOf(s.artist) || {}).name || null,
+  };
+}
+
+function tipView(t) {
+  const song = songById(t.songId);
+  const top = biggestFanOf(t.artist || (song && song.artist));
+  return {
+    id: t.id, amount: t.amount, by: t.by, message: t.message || '', at: t.at,
+    songTitle: song ? song.title : '—', artist: t.artist || (song && song.artist) || '—',
+    byBiggestFan: !!(top && t.voterId && top.voterId === t.voterId),
   };
 }
 
@@ -140,6 +194,7 @@ function publicState(voterId) {
       champion: songView(songById(d.championId)), challenger: songView(songById(d.challengerId)),
       counts: d.counts, winner: d.winner, challengedBy: d.challengedBy, at: d.at,
     })),
+    recentTips: db.tips.slice(-8).reverse().map(tipView),
     config: { duelSeconds: DUEL_SECONDS, breakSeconds: BREAK_SECONDS },
   };
 }
@@ -171,6 +226,11 @@ function resolveDuel(now) {
   const challengerWins = counts.challenger > counts.champion; // равенство: шампионът остава
   const champion = songById(d.championId);
   const challenger = songById(d.challengerId);
+  // Всеки глас носи точки на фена към артиста, за когото е гласувал
+  for (const [voterId, side] of Object.entries(d.votes)) {
+    const song = side === 'champion' ? champion : challenger;
+    if (song) bumpFan(song.artist, voterId, 'votes', 1);
+  }
   if (challengerWins) {
     db.reigns.push({ songId: d.championId, start: db.throne.since, end: now });
     db.throne = { songId: d.challengerId, since: now };
@@ -391,6 +451,7 @@ async function handleApi(req, res, url) {
     if (body.side !== 'champion' && body.side !== 'challenger') throw new HttpError(400, 'Невалиден избор.');
     if (body.duelId && body.duelId !== db.duel.id) throw new HttpError(400, 'Дуелът вече приключи.');
     db.duel.votes[voterId] = body.side;
+    rememberFan(voterId, body.name);
     save(); broadcast('state');
     return sendJson(res, 200, { ok: true });
   }
@@ -400,13 +461,82 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const song = songById(body.songId);
     const amount = Math.round(Number(body.amount));
+    const voterId = clean(body.voterId, 64);
     if (!song) throw new HttpError(404, 'Няма такава песен.');
     if (song.type !== 'audio') throw new HttpError(400, 'Бакшиши има само за нови артисти с оригинална музика.');
-    if (!Number.isFinite(amount) || amount < 1 || amount > 100) throw new HttpError(400, 'Сумата трябва да е между 1 и 100 лв.');
-    db.tips.push({ songId: song.id, amount, by: clean(body.by, 30) || 'Анонимен', at: Date.now() });
+    if (!Number.isFinite(amount) || amount < MIN_TIP || amount > MAX_TIP) throw new HttpError(400, `Сумата трябва да е между ${MIN_TIP} и ${MAX_TIP} €.`);
+    if (voterId.length < 8) throw new HttpError(400, 'Невалиден потребител.');
+    rememberFan(voterId, body.by);
+    const before = biggestFanOf(song.artist);
+    db.tips.push({
+      id: newId(), songId: song.id, artist: song.artist, amount, voterId,
+      by: fanName(voterId), message: clean(body.message, 140), at: Date.now(),
+    });
+    if (db.tips.length > 5000) db.tips = db.tips.slice(-5000);
     song.tipsTotal = (song.tipsTotal || 0) + amount;
+    bumpFan(song.artist, voterId, 'tips', amount);
+    const after = biggestFanOf(song.artist);
+    const becameBiggestFan = !!(after && after.voterId === voterId && (!before || before.voterId !== voterId));
     save(); broadcast('state'); broadcast('library');
-    return sendJson(res, 200, { ok: true, total: song.tipsTotal, test: true });
+    return sendJson(res, 200, { ok: true, total: song.tipsTotal, becameBiggestFan, test: true });
+  }
+
+  // Страница на артист: песни, суми и класация на феновете
+  if (m === 'GET' && p === '/api/artist') {
+    const key = artistKey(url.searchParams.get('name'));
+    const songs = db.songs.filter((s) => artistKey(s.artist) === key);
+    if (!key || !songs.length) throw new HttpError(404, 'Няма такъв артист.');
+    const me = clean(url.searchParams.get('voterId'), 64);
+    const board = fanBoard(songs[0].artist);
+    const top = biggestFanOf(songs[0].artist);
+    const myIndex = board.findIndex((f) => f.voterId === me);
+    const myAnon = myIndex < 0 ? fanBoardAll(songs[0].artist).find((f) => f.voterId === me) : null;
+    return sendJson(res, 200, {
+      artist: songs[0].artist,
+      original: songs.some((s) => s.type === 'audio'),
+      songs: songs.map(songView),
+      totals: {
+        tips: songs.reduce((a, s) => a + (s.tipsTotal || 0), 0),
+        wins: songs.reduce((a, s) => a + (s.duelWins || 0), 0),
+        defenses: songs.reduce((a, s) => a + (s.defenses || 0), 0),
+      },
+      biggestFan: top ? { name: top.name, score: top.score } : null,
+      fans: board.slice(0, 10).map((f) => ({
+        name: f.name, votes: f.votes, tips: f.tips, score: f.score,
+        isMe: f.voterId === me, isBiggestFan: !!(top && top.voterId === f.voterId),
+      })),
+      me: myIndex >= 0 ? { rank: myIndex + 1, ...board[myIndex], voterId: undefined }
+        : myAnon ? { rank: null, ...myAnon, voterId: undefined } : null,
+      recentTips: db.tips.filter((t) => artistKey(t.artist) === key).slice(-10).reverse().map(tipView),
+      points: { vote: POINTS_PER_VOTE, euro: POINTS_PER_EURO },
+    });
+  }
+
+  // Моят профил: значки „Най-голям фен“ и подкрепени артисти
+  if (m === 'GET' && p === '/api/me') {
+    const me = clean(url.searchParams.get('voterId'), 64);
+    const artists = {};
+    for (const s of db.songs) artists[artistKey(s.artist)] = s.artist;
+    const supported = [];
+    for (const [key, board] of Object.entries(db.fanStats)) {
+      const st = board[me];
+      if (!st) continue;
+      const name = artists[key];
+      if (!name) continue;
+      const top = biggestFanOf(name);
+      supported.push({
+        artist: name, votes: st.votes, tips: st.tips,
+        score: st.votes * POINTS_PER_VOTE + st.tips * POINTS_PER_EURO,
+        isBiggestFan: !!(top && top.voterId === me),
+      });
+    }
+    supported.sort((a, b) => Number(b.isBiggestFan) - Number(a.isBiggestFan) || b.score - a.score);
+    return sendJson(res, 200, {
+      name: fanName(me),
+      badges: supported.filter((s) => s.isBiggestFan).map((s) => s.artist),
+      supported,
+      points: { vote: POINTS_PER_VOTE, euro: POINTS_PER_EURO },
+    });
   }
 
   throw new HttpError(404, 'Няма такъв адрес.');

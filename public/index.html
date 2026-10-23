@@ -20,10 +20,13 @@
         <div class="tagline">една песен · целият свят слуша</div>
       </div>
     </div>
-    <label class="nick">
-      <span>Твоето име</span>
-      <input id="nick" maxlength="30" placeholder="Анонимен" autocomplete="nickname">
-    </label>
+    <div class="me-box">
+      <label class="nick">
+        <span>Твоето име</span>
+        <input id="nick" maxlength="30" placeholder="Анонимен" autocomplete="nickname">
+      </label>
+      <button id="badges-btn" class="btn small badge-btn" title="Моите значки">🏅 <span id="badge-count">0</span></button>
+    </div>
   </header>
 
   <main>
@@ -73,6 +76,11 @@
       <section class="card">
         <h2>📜 Последни дуели</h2>
         <div id="recent" class="list"></div>
+      </section>
+      <section class="card">
+        <h2>💸 Последни бакшиши</h2>
+        <p class="hint">Подкрепа за новите артисти</p>
+        <div id="tips-feed" class="list"></div>
       </section>
     </div>
 
@@ -127,22 +135,51 @@
     </div>
 
     <footer class="foot">
-      Прототип · бакшишите са в тестов режим, не се теглят реални пари.
+      Прототип · бакшишите са в тестов режим, не се теглят реални пари.<br>
+      🏅 <b>Най-голям фен</b>: 1 точка за всеки глас за артиста, 3 точки за всяко евро бакшиш.
     </footer>
   </main>
 
+  <!-- БАКШИШ -->
   <dialog id="tip-dialog">
-    <form method="dialog" class="tip-box">
-      <h3>💸 Бакшиш за <span id="tip-title"></span></h3>
-      <p class="hint">Тестов режим: не се теглят реални пари.</p>
-      <div class="amounts">
-        <button value="2" class="btn outline">2 лв.</button>
-        <button value="5" class="btn outline">5 лв.</button>
-        <button value="10" class="btn outline">10 лв.</button>
-        <button value="20" class="btn outline">20 лв.</button>
+    <form id="tip-form" class="modal-box">
+      <button type="button" class="close-x" data-close aria-label="Затвори">✕</button>
+      <h3>💸 Бакшиш за <span id="tip-artist"></span></h3>
+      <p class="hint" id="tip-song"></p>
+      <div class="amounts" role="radiogroup" aria-label="Сума">
+        <button type="button" class="amount" data-amount="1">1 €</button>
+        <button type="button" class="amount active" data-amount="2">2 €</button>
+        <button type="button" class="amount" data-amount="5">5 €</button>
+        <button type="button" class="amount" data-amount="10">10 €</button>
       </div>
-      <button value="cancel" class="btn ghost small">Отказ</button>
+      <label class="field">
+        <span>Или друга сума (1–50 €)</span>
+        <input id="tip-custom" type="number" min="1" max="50" step="1" inputmode="numeric" placeholder="напр. 3">
+      </label>
+      <label class="field">
+        <span>Съобщение до артиста (по желание)</span>
+        <textarea id="tip-message" maxlength="140" rows="2" placeholder="Страхотна песен! 🔥"></textarea>
+      </label>
+      <p class="fan-note" id="tip-fan-note"></p>
+      <button type="submit" class="btn gold big" id="tip-submit">Изпрати 2 €</button>
+      <p class="hint center">Тестов режим: не се теглят реални пари.</p>
     </form>
+  </dialog>
+
+  <!-- АРТИСТ -->
+  <dialog id="artist-dialog">
+    <div class="modal-box wide">
+      <button type="button" class="close-x" data-close aria-label="Затвори">✕</button>
+      <div id="artist-body"></div>
+    </div>
+  </dialog>
+
+  <!-- МОИТЕ ЗНАЧКИ -->
+  <dialog id="badges-dialog">
+    <div class="modal-box">
+      <button type="button" class="close-x" data-close aria-label="Затвори">✕</button>
+      <div id="badges-body"></div>
+    </div>
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>

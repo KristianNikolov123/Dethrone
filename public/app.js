@@ -67,6 +67,9 @@
       indexSongs([s.throne?.song, s.duel?.champion, s.duel?.challenger, ...s.queue.map((q) => q.song)]);
       render();
       syncPlayer();
+      // След всеки завършил дуел гласовете носят точки, затова обнови значките
+      const lastDuelAt = s.recentDuels[0]?.at || 0;
+      if (lastDuelAt !== refresh.lastDuelAt) { refresh.lastDuelAt = lastDuelAt; loadBadges(); }
     } catch (e) { console.error(e); }
   }
   async function loadLibrary() {
@@ -91,8 +94,27 @@
     renderHall();
     renderScouts();
     renderRecent();
+    renderTips();
     renderLibrary();
     updateTimers();
+  }
+
+  const artistLink = (name) => `<button class="link" data-artist="${esc(name)}">${esc(name)}</button>`;
+  const fanPill = (s) => (s.biggestFan ? `<span class="fan-pill" title="Най-голям фен на ${esc(s.artist)}">🏅 Най-голям фен: ${esc(s.biggestFan)}</span>` : '');
+  const eur = (n) => `${n} €`;
+
+  function renderTips() {
+    const el = $('#tips-feed');
+    const tips = state.recentTips || [];
+    if (!tips.length) { el.innerHTML = '<p class="empty">Още няма бакшиши. Подкрепи нов артист с 💸.</p>'; return; }
+    el.innerHTML = tips.map((t) => `<div class="item tip-item">
+      <span class="amt">${eur(t.amount)}</span>
+      <div class="grow">
+        <div class="t">${esc(t.by)}${t.byBiggestFan ? ' 🏅' : ''} → ${artistLink(t.artist)}</div>
+        <div class="s">за „${esc(t.songTitle)}“</div>
+        ${t.message ? `<div class="tip-msg">„${esc(t.message)}“</div>` : ''}
+      </div>
+    </div>`).join('');
   }
 
   function renderThrone() {
@@ -108,8 +130,9 @@
     const s = t.song;
     el.innerHTML = `<div class="tags">${tag(s)}${state.duel ? '<span class="tag live">В дуел</span>' : ''}</div>
       <h1 class="song-title">${esc(s.title)}</h1>
-      <p class="artist">${esc(s.artist)}</p>
-      <p class="meta">Пратена от ${esc(s.addedBy)} · ${s.duelWins} ${s.duelWins === 1 ? 'победа' : 'победи'} · ${s.defenses} ${s.defenses === 1 ? 'защита' : 'защити'}${s.original ? ` · ${s.tipsTotal} лв. бакшиши` : ''}</p>
+      <p class="artist">${artistLink(s.artist)}</p>
+      <p class="meta">Пратена от ${esc(s.addedBy)} · ${s.duelWins} ${s.duelWins === 1 ? 'победа' : 'победи'} · ${s.defenses} ${s.defenses === 1 ? 'защита' : 'защити'}${s.original ? ` · ${eur(s.tipsTotal)} бакшиши` : ''}</p>
+      ${fanPill(s)}
       ${s.original ? `<div class="row" style="margin-top:10px"><button class="btn gold small" data-tip="${s.id}">💸 Бакшиш</button></div>` : ''}`;
   }
 
@@ -138,7 +161,8 @@
         <div class="duel-label">${label}</div>
         ${thumb(s)}
         <h3>${esc(s.title)}</h3>
-        <p class="artist">${esc(s.artist)}</p>
+        <p class="artist">${artistLink(s.artist)}</p>
+        ${fanPill(s)}
         <div class="bar"><span style="width:${pct(k)}%"></span></div>
         <p class="votes"><b>${d.counts[k]}</b> ${d.counts[k] === 1 ? 'глас' : 'гласа'} · ${total ? pct(k) + '%' : '—'}</p>
         <div class="row">
@@ -217,7 +241,7 @@
         ${thumb(s)}
         <div class="grow" style="flex:1;min-width:0">
           <div class="item"><div class="grow"><div class="t">${esc(s.title)}</div>
-          <div class="s">${esc(s.artist)} · ${s.duelWins} победи${s.original ? ` · ${s.tipsTotal} лв.` : ''}</div></div></div>
+          <div class="s">${artistLink(s.artist)} · ${s.duelWins} победи${s.original ? ` · ${eur(s.tipsTotal)}` : ''}</div></div></div>
           <div class="actions">
             ${tag(s)}
             <button class="btn small" data-preview="${s.id}">▶ Чуй</button>
@@ -409,33 +433,171 @@
 
   async function vote(side) {
     try {
-      await post('/api/vote', { voterId, side, duelId: state?.duel?.id });
+      await post('/api/vote', { voterId, side, duelId: state?.duel?.id, name: nick() });
       refresh();
     } catch (e) { toast(e.message, true); }
   }
 
+  // ---------- Бакшиши ----------
   const tipDialog = $('#tip-dialog');
+  const tipCustom = $('#tip-custom');
   let tipSongId = null;
-  function openTip(songId) {
+  let tipAmount = 2;
+
+  function tipValue() {
+    const custom = Math.round(Number(tipCustom.value));
+    return tipCustom.value ? custom : tipAmount;
+  }
+  function updateTipButton() {
+    const v = tipValue();
+    const ok = Number.isFinite(v) && v >= 1 && v <= 50;
+    $('#tip-submit').textContent = ok ? `Изпрати ${eur(v)}` : 'Избери сума от 1 до 50 €';
+    $('#tip-submit').disabled = !ok;
+  }
+
+  async function openTip(songId) {
     const s = songIndex.get(songId);
     if (!s) return;
     tipSongId = songId;
-    $('#tip-title').textContent = s.title;
+    $('#tip-artist').textContent = s.artist;
+    $('#tip-song').textContent = `за песента „${s.title}“`;
+    $('#tip-message').value = '';
+    tipCustom.value = '';
+    tipAmount = 2;
+    document.querySelectorAll('.amount').forEach((x) => x.classList.toggle('active', Number(x.dataset.amount) === tipAmount));
+    updateTipButton();
+    $('#tip-fan-note').textContent = '';
     tipDialog.showModal();
-  }
-  tipDialog.addEventListener('close', async () => {
-    const amount = Number(tipDialog.returnValue);
-    if (!tipSongId || !amount) return;
+    // Покажи колко точки липсват до значката „Най-голям фен“
     try {
-      const r = await post('/api/tip', { songId: tipSongId, amount, by: nick() });
-      toast(`💸 Благодарим! Общо ${r.total} лв. (тестов режим)`);
-    } catch (e) { toast(e.message, true); }
-    tipSongId = null;
+      const a = await api(`/api/artist?name=${encodeURIComponent(s.artist)}&voterId=${encodeURIComponent(voterId)}`);
+      const note = $('#tip-fan-note');
+      if (nick() === 'Анонимен') note.textContent = '🏅 Задай си име горе, за да можеш да спечелиш значка „Най-голям фен“.';
+      else if (a.fans.some((f) => f.isMe && f.isBiggestFan)) note.textContent = `🏅 Ти си най-големият фен на ${a.artist}! Всяко евро носи ${a.points.euro} точки.`;
+      else if (a.biggestFan) {
+        const mine = a.me ? a.me.score : 0;
+        const need = Math.max(1, Math.ceil((a.biggestFan.score - mine + 1) / a.points.euro));
+        note.textContent = `🏅 Най-голям фен е ${a.biggestFan.name} (${a.biggestFan.score} т.). Изпрати поне ${eur(need)}, за да заемеш първото място.`;
+      } else note.textContent = `🏅 ${a.artist} още няма най-голям фен. Това може да си ти!`;
+    } catch { /* без бележка */ }
+  }
+
+  document.querySelectorAll('.amount').forEach((b) => b.addEventListener('click', () => {
+    tipAmount = Number(b.dataset.amount);
+    tipCustom.value = '';
+    document.querySelectorAll('.amount').forEach((x) => x.classList.toggle('active', x === b));
+    updateTipButton();
+  }));
+  tipCustom.addEventListener('input', () => {
+    document.querySelectorAll('.amount').forEach((x) => x.classList.toggle('active', !tipCustom.value && Number(x.dataset.amount) === tipAmount));
+    updateTipButton();
+  });
+
+  $('#tip-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const amount = tipValue();
+    if (!tipSongId) return;
+    const btn = $('#tip-submit');
+    btn.disabled = true;
+    try {
+      const r = await post('/api/tip', { songId: tipSongId, amount, by: nick(), voterId, message: $('#tip-message').value });
+      tipDialog.close();
+      toast(r.becameBiggestFan ? '🏅 Вече си най-големият фен на този артист!' : `💸 Благодарим! Изпрати ${eur(amount)} (тестов режим)`);
+      loadBadges();
+    } catch (err) { toast(err.message, true); }
+    btn.disabled = false;
+  });
+
+  // ---------- Страница на артист ----------
+  const artistDialog = $('#artist-dialog');
+  async function openArtist(name) {
+    const body = $('#artist-body');
+    body.innerHTML = '<p class="muted">Зарежда се…</p>';
+    if (!artistDialog.open) artistDialog.showModal();
+    try {
+      const a = await api(`/api/artist?name=${encodeURIComponent(name)}&voterId=${encodeURIComponent(voterId)}`);
+      indexSongs(a.songs);
+      const tipSong = a.songs.find((s) => s.original);
+      body.innerHTML = `
+        <div><div class="tags">${a.original ? '<span class="tag gold">Нов артист</span>' : '<span class="tag">YouTube</span>'}</div>
+          <h3 class="song-title" style="font-size:26px">${esc(a.artist)}</h3></div>
+        <div class="stats">
+          <div class="stat"><b>${a.totals.wins}</b><span>победи</span></div>
+          <div class="stat"><b>${a.totals.defenses}</b><span>защити</span></div>
+          <div class="stat"><b>${a.original ? eur(a.totals.tips) : '—'}</b><span>бакшиши</span></div>
+        </div>
+        ${a.biggestFan
+          ? `<div class="big-fan"><span class="medal">🏅</span><div><div class="hint" style="margin:0">Най-голям фен</div><div class="who">${esc(a.biggestFan.name)}</div><div class="muted small">${a.biggestFan.score} точки</div></div></div>`
+          : '<div class="big-fan"><span class="medal">🏅</span><div><div class="who">Още няма най-голям фен</div><div class="muted small">Гласувай за песните на артиста или му прати бакшиш.</div></div></div>'}
+        ${a.fans.length ? `<div>
+          <h2 style="margin-bottom:6px">Класация на феновете</h2>
+          <table class="fan-table">
+            <thead><tr><th>#</th><th>Фен</th><th class="num">Гласове</th><th class="num">Бакшиши</th><th class="num">Точки</th></tr></thead>
+            <tbody>${a.fans.map((f, i) => `<tr class="${f.isMe ? 'me' : ''}">
+              <td>${i + 1}</td><td>${esc(f.name)}${f.isBiggestFan ? ' 🏅' : ''}${f.isMe ? ' <span class="muted small">(ти)</span>' : ''}</td>
+              <td class="num">${f.votes}</td><td class="num">${eur(f.tips)}</td><td class="num pts">${f.score}</td></tr>`).join('')}</tbody>
+          </table></div>` : ''}
+        <p class="my-rank">${a.me ? (a.me.rank ? `Ти си №${a.me.rank} с ${a.me.score} точки.` : `Имаш ${a.me.score} точки. Задай си име, за да влезеш в класацията.`) : 'Още нямаш точки за този артист.'} Точки: ${a.points.vote} за глас, ${a.points.euro} за всяко евро бакшиш. Гласовете се отчитат след края на дуела.</p>
+        ${a.recentTips.length ? `<div><h2 style="margin-bottom:6px">Последни бакшиши</h2><div class="list">${a.recentTips.map((t) => `
+          <div class="item tip-item"><span class="amt">${eur(t.amount)}</span><div class="grow">
+            <div class="t">${esc(t.by)}${t.byBiggestFan ? ' 🏅' : ''}</div><div class="s">за „${esc(t.songTitle)}“</div>
+            ${t.message ? `<div class="tip-msg">„${esc(t.message)}“</div>` : ''}</div></div>`).join('')}</div></div>` : ''}
+        <div><h2 style="margin-bottom:6px">Песни</h2><div class="list">${a.songs.map((s) => `
+          <div class="item">${thumb(s)}<div class="grow"><div class="t">${esc(s.title)}</div><div class="s">${s.duelWins} победи · ${s.defenses} защити</div></div>
+          <button class="btn small" data-preview="${s.id}">▶</button></div>`).join('')}</div></div>
+        ${tipSong ? `<button class="btn gold big" data-tip="${tipSong.id}">💸 Прати бакшиш на ${esc(a.artist)}</button>` : ''}`;
+    } catch (err) {
+      body.innerHTML = `<p class="empty">${esc(err.message)}</p>`;
+    }
+  }
+
+  // ---------- Моите значки ----------
+  const badgesDialog = $('#badges-dialog');
+  let me = null;
+  async function loadBadges() {
+    try {
+      me = await api('/api/me?voterId=' + encodeURIComponent(voterId));
+      $('#badge-count').textContent = me.badges.length;
+      $('#badges-btn').classList.toggle('has', me.badges.length > 0);
+      if (badgesDialog.open) renderBadges();
+    } catch { /* ignore */ }
+  }
+  function renderBadges() {
+    const body = $('#badges-body');
+    if (!me) { body.innerHTML = '<p class="muted">Зарежда се…</p>'; return; }
+    const named = nick() !== 'Анонимен';
+    body.innerHTML = `
+      <h3>🏅 Моите значки</h3>
+      ${named ? '' : '<p class="fan-note">Задай си име горе вляво от този бутон, за да можеш да печелиш значки.</p>'}
+      <p class="hint">Ставаш <b>Най-голям фен</b> на артист, когато имаш най-много точки за него: ${me.points.vote} за всеки глас и ${me.points.euro} за всяко евро бакшиш.</p>
+      ${me.supported.length ? `<div class="badge-list">${me.supported.map((s) => `
+        <div class="badge-row ${s.isBiggestFan ? 'gold' : ''}">
+          <span style="font-size:22px">${s.isBiggestFan ? '🏅' : '🎧'}</span>
+          <div class="grow"><div class="t">${artistLink(s.artist)}</div>
+            <div class="s">${s.isBiggestFan ? 'Най-голям фен · ' : ''}${s.votes} гласа · ${eur(s.tips)} бакшиши</div></div>
+          <span class="dur">${s.score} т.</span>
+        </div>`).join('')}</div>`
+      : '<p class="empty">Още не си подкрепял артисти. Гласувай в дуел или прати бакшиш.</p>'}`;
+  }
+  $('#badges-btn').addEventListener('click', async () => {
+    renderBadges();
+    badgesDialog.showModal();
+    await loadBadges();
+    renderBadges();
+  });
+
+  // Затваряне на диалозите: бутон ✕ или клик извън тях
+  document.querySelectorAll('dialog').forEach((d) => {
+    d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
   });
 
   document.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
+    if (b.hasAttribute('data-close')) { b.closest('dialog').close(); return; }
+    if (b.dataset.artist) { openArtist(b.dataset.artist); return; }
+    if (b.dataset.tip && artistDialog.open) artistDialog.close();
+    if (b.dataset.preview && b.closest('dialog')) b.closest('dialog').close();
     if (b.dataset.preview) { const s = songIndex.get(b.dataset.preview); if (s) preview(s); }
     else if (b.dataset.vote) vote(b.dataset.vote);
     else if (b.dataset.challenge) challenge(b.dataset.challenge);
