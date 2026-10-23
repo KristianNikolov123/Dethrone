@@ -17,6 +17,8 @@ try {
 
 const PORT = Number(process.env.PORT || 3000);
 const YOUTUBE_API_KEY = (process.env.YOUTUBE_API_KEY || '').trim();
+const CONTACT_EMAIL = (process.env.CONTACT_EMAIL || '').trim();  // показва се на страницата за поверителност
+const escapeHtml = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const DUEL_SECONDS = Number(process.env.DUEL_SECONDS || 120);   // колко трае един дуел
 const BREAK_SECONDS = Number(process.env.BREAK_SECONDS || 20);  // пауза между дуелите
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 20);
@@ -1196,6 +1198,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Методът не е позволен.');
     const rel = decodeURIComponent(url.pathname);
+    // Страница за поверителност, с адреса за контакт от настройките (CONTACT_EMAIL)
+    if (rel === '/privacy' || rel === '/privacy.html') {
+      const contact = CONTACT_EMAIL
+        ? `<a href="mailto:${escapeHtml(CONTACT_EMAIL)}">${escapeHtml(CONTACT_EMAIL)}</a>`
+        : '<a href="https://github.com/KristianNikolov123/Dethrone/issues">страницата на проекта в GitHub</a>';
+      const html = fs.readFileSync(path.join(PUBLIC_DIR, 'privacy.html'), 'utf8').replaceAll('{{CONTACT}}', contact);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      return res.end(req.method === 'HEAD' ? undefined : html);
+    }
     if (rel.startsWith('/uploads/')) {
       if (serveStatic(req, res, UPLOAD_DIR, rel.slice('/uploads/'.length))) return;
     } else if (serveStatic(req, res, PUBLIC_DIR, rel === '/' ? 'index.html' : rel.slice(1))) return;
