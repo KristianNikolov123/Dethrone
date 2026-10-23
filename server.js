@@ -1,0 +1,438 @@
+// BandCamper: една песен на трона, дуели решени от слушателите.
+// Без външни зависимости: нужен е само Node.js 18+.
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const PORT = Number(process.env.PORT || 3000);
+const DUEL_SECONDS = Number(process.env.DUEL_SECONDS || 120);   // колко трае един дуел
+const BREAK_SECONDS = Number(process.env.BREAK_SECONDS || 20);  // пауза между дуелите
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 20);
+
+const ROOT = __dirname;
+const PUBLIC_DIR = path.join(ROOT, 'public');
+const DATA_DIR = path.join(ROOT, 'data');
+const UPLOAD_DIR = path.join(ROOT, 'uploads');
+const DB_FILE = path.join(DATA_DIR, 'db.json');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// ---------- База данни (JSON файл, достатъчно за прототип) ----------
+const emptyDb = () => ({
+  songs: [],      // {id,title,artist,type:'youtube'|'audio',videoId?,audioUrl?,addedBy,createdAt,duelWins,defenses,tipsTotal}
+  throne: null,   // {songId, since}
+  duel: null,     // {id,championId,challengerId,challengedBy,startedAt,endsAt,votes:{voterId:side}}
+  queue: [],      // {songId, challengedBy, at}
+  reigns: [],     // завършили царувания {songId,start,end}
+  duels: [],      // история {id,championId,challengerId,challengedBy,counts,winner,at}
+  tips: [],       // тестови бакшиши {songId,amount,by,at}
+  nextDuelAt: 0,
+});
+
+function loadDb() {
+  try { return { ...emptyDb(), ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }; }
+  catch { return emptyDb(); }
+}
+let db = loadDb();
+
+function save() {
+  const tmp = DB_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+  fs.renameSync(tmp, DB_FILE);
+}
+
+const newId = () => crypto.randomBytes(6).toString('hex');
+const songById = (id) => db.songs.find((s) => s.id === id) || null;
+const clean = (v, max = 80) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
+
+// ---------- YouTube ----------
+function youtubeId(input) {
+  const raw = String(input || '').trim();
+  if (/^[\w-]{11}$/.test(raw)) return raw;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.replace(/^(www|m|music)\./, '');
+    let id = null;
+    if (host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
+    else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      id = u.searchParams.get('v');
+      if (!id) {
+        const m = u.pathname.match(/^\/(embed|shorts|live|v)\/([\w-]{11})/);
+        if (m) id = m[2];
+      }
+    }
+    return id && /^[\w-]{11}$/.test(id) ? id : null;
+  } catch { return null; }
+}
+
+async function youtubeMeta(videoId) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    const url = 'https://www.youtube.com/oembed?format=json&url=' +
+      encodeURIComponent('https://www.youtube.com/watch?v=' + videoId);
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return null;
+    const j = await r.json();
+    return { title: j.title, artist: j.author_name };
+  } catch { return null; }
+}
+
+// ---------- Изгледи за клиента ----------
+function songView(s) {
+  if (!s) return null;
+  return {
+    id: s.id, title: s.title, artist: s.artist, type: s.type,
+    videoId: s.videoId || null, audioUrl: s.audioUrl || null,
+    original: s.type === 'audio', addedBy: s.addedBy,
+    duelWins: s.duelWins || 0, defenses: s.defenses || 0, tipsTotal: s.tipsTotal || 0,
+    createdAt: s.createdAt,
+  };
+}
+
+function voteCounts(d) {
+  const c = { champion: 0, challenger: 0 };
+  for (const v of Object.values(d.votes)) if (c[v] !== undefined) c[v]++;
+  return c;
+}
+
+function hallOfFame(now) {
+  const all = db.reigns.map((r) => ({ ...r, current: false }));
+  if (db.throne) all.push({ songId: db.throne.songId, start: db.throne.since, end: now, current: true });
+  return all
+    .map((r) => ({ song: songView(songById(r.songId)), duration: r.end - r.start, current: r.current, start: r.start }))
+    .filter((r) => r.song)
+    .sort((a, b) => b.duration - a.duration)
+    .slice(0, 10);
+}
+
+function scouts() {
+  const map = {};
+  for (const d of db.duels) {
+    if (d.winner === 'challenger' && d.challengedBy) map[d.challengedBy] = (map[d.challengedBy] || 0) + 1;
+  }
+  return Object.entries(map).map(([name, wins]) => ({ name, wins }))
+    .sort((a, b) => b.wins - a.wins).slice(0, 10);
+}
+
+function publicState(voterId) {
+  const now = Date.now();
+  let duel = null;
+  if (db.duel) {
+    const d = db.duel;
+    duel = {
+      id: d.id, champion: songView(songById(d.championId)), challenger: songView(songById(d.challengerId)),
+      challengedBy: d.challengedBy, startedAt: d.startedAt, endsAt: d.endsAt,
+      counts: voteCounts(d), myVote: voterId ? d.votes[voterId] || null : null,
+    };
+  }
+  return {
+    now,
+    throne: db.throne ? { song: songView(songById(db.throne.songId)), since: db.throne.since } : null,
+    duel,
+    queue: db.queue.map((q) => ({ song: songView(songById(q.songId)), challengedBy: q.challengedBy })).filter((q) => q.song),
+    nextDuelAt: !db.duel && db.queue.length ? Math.max(db.nextDuelAt, now) : null,
+    hallOfFame: hallOfFame(now),
+    scouts: scouts(),
+    recentDuels: db.duels.slice(-8).reverse().map((d) => ({
+      champion: songView(songById(d.championId)), challenger: songView(songById(d.challengerId)),
+      counts: d.counts, winner: d.winner, challengedBy: d.challengedBy, at: d.at,
+    })),
+    config: { duelSeconds: DUEL_SECONDS, breakSeconds: BREAK_SECONDS },
+  };
+}
+
+// ---------- Живи обновления (Server-Sent Events) ----------
+const clients = new Set();
+function broadcast(kind = 'state') {
+  for (const c of clients) c.write(`event: ${kind}\ndata: ${Date.now()}\n\n`);
+}
+setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000);
+
+// ---------- Логика на дуелите ----------
+function startDuel(now) {
+  while (db.queue.length) {
+    const q = db.queue.shift();
+    if (!songById(q.songId) || (db.throne && q.songId === db.throne.songId)) continue;
+    db.duel = {
+      id: newId(), championId: db.throne.songId, challengerId: q.songId, challengedBy: q.challengedBy,
+      startedAt: now, endsAt: now + DUEL_SECONDS * 1000, votes: {},
+    };
+    return true;
+  }
+  return false;
+}
+
+function resolveDuel(now) {
+  const d = db.duel;
+  const counts = voteCounts(d);
+  const challengerWins = counts.challenger > counts.champion; // равенство: шампионът остава
+  const champion = songById(d.championId);
+  const challenger = songById(d.challengerId);
+  if (challengerWins) {
+    db.reigns.push({ songId: d.championId, start: db.throne.since, end: now });
+    db.throne = { songId: d.challengerId, since: now };
+    if (challenger) challenger.duelWins = (challenger.duelWins || 0) + 1;
+  } else if (champion) {
+    champion.defenses = (champion.defenses || 0) + 1;
+  }
+  db.duels.push({
+    id: d.id, championId: d.championId, challengerId: d.challengerId, challengedBy: d.challengedBy,
+    counts, winner: challengerWins ? 'challenger' : 'champion', at: now,
+  });
+  if (db.duels.length > 500) db.duels = db.duels.slice(-500);
+  db.duel = null;
+  db.nextDuelAt = now + BREAK_SECONDS * 1000;
+}
+
+function tick() {
+  const now = Date.now();
+  let changed = false;
+  if (db.duel && now >= db.duel.endsAt) { resolveDuel(now); changed = true; }
+  if (!db.duel && db.throne && db.queue.length && now >= db.nextDuelAt) {
+    if (startDuel(now)) changed = true;
+  }
+  if (changed) { save(); broadcast('state'); }
+}
+setInterval(tick, 1000);
+
+// ---------- HTTP помощници ----------
+class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+
+function sendJson(res, status, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(body);
+}
+
+function readJson(req, limit = 10 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new HttpError(413, 'Твърде голяма заявка.')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (!chunks.length) return resolve({});
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { reject(new HttpError(400, 'Невалиден JSON.')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon',
+  '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.webm': 'audio/webm',
+};
+const AUDIO_EXT = ['.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.webm'];
+
+// Статични файлове, с поддръжка на Range (нужно за превъртане в аудиото)
+function serveStatic(req, res, baseDir, relPath) {
+  const filePath = path.normalize(path.join(baseDir, relPath));
+  if (!filePath.startsWith(baseDir + path.sep) && filePath !== baseDir) return false;
+  let stat;
+  try { stat = fs.statSync(filePath); } catch { return false; }
+  if (!stat.isFile()) return false;
+  const type = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+  const headers = { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Cache-Control': baseDir === UPLOAD_DIR ? 'public, max-age=86400' : 'no-cache' };
+  const range = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+  if (range) {
+    let start = range[1] === '' ? NaN : Number(range[1]);
+    let end = range[2] === '' ? stat.size - 1 : Number(range[2]);
+    if (Number.isNaN(start)) { start = stat.size - end; end = stat.size - 1; }
+    if (start >= stat.size || start < 0 || end < start) {
+      res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` });
+      res.end();
+      return true;
+    }
+    end = Math.min(end, stat.size - 1);
+    res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Content-Length': end - start + 1 });
+    if (req.method === 'HEAD') return res.end(), true;
+    fs.createReadStream(filePath, { start, end }).pipe(res);
+    return true;
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': stat.size });
+  if (req.method === 'HEAD') return res.end(), true;
+  fs.createReadStream(filePath).pipe(res);
+  return true;
+}
+
+// Качване: тялото на заявката е самият файл, данните са в адреса (?title=…&artist=…)
+function receiveUpload(req, ext) {
+  return new Promise((resolve, reject) => {
+    const max = MAX_UPLOAD_MB * 1024 * 1024;
+    if (Number(req.headers['content-length'] || 0) > max) {
+      return reject(new HttpError(413, `Файлът е по-голям от ${MAX_UPLOAD_MB} MB.`));
+    }
+    const name = newId() + ext;
+    const filePath = path.join(UPLOAD_DIR, name);
+    const out = fs.createWriteStream(filePath);
+    let size = 0;
+    let failed = false;
+    const fail = (err) => {
+      if (failed) return;
+      failed = true;
+      out.destroy();
+      fs.rm(filePath, { force: true }, () => {});
+      reject(err);
+    };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > max) { fail(new HttpError(413, `Файлът е по-голям от ${MAX_UPLOAD_MB} MB.`)); req.destroy(); }
+    });
+    req.on('error', () => fail(new HttpError(400, 'Качването прекъсна.')));
+    req.pipe(out);
+    out.on('finish', () => {
+      if (failed) return;
+      if (size === 0) return fail(new HttpError(400, 'Файлът е празен.'));
+      resolve({ name, size, filePath });
+    });
+    out.on('error', () => fail(new HttpError(500, 'Файлът не може да се запише.')));
+  });
+}
+
+// ---------- Маршрути ----------
+async function handleApi(req, res, url) {
+  const p = url.pathname;
+  const m = req.method;
+
+  if (m === 'GET' && p === '/api/events') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    res.write('retry: 3000\n\n');
+    clients.add(res);
+    req.on('close', () => clients.delete(res));
+    return;
+  }
+
+  if (m === 'GET' && p === '/api/state') return sendJson(res, 200, publicState(clean(url.searchParams.get('voterId'), 64)));
+
+  if (m === 'GET' && p === '/api/songs') return sendJson(res, 200, { songs: [...db.songs].reverse().map(songView) });
+
+  // Добавяне на песен от YouTube
+  if (m === 'POST' && p === '/api/songs') {
+    const body = await readJson(req);
+    const videoId = youtubeId(body.url);
+    if (!videoId) throw new HttpError(400, 'Невалиден YouTube линк.');
+    const existing = db.songs.find((s) => s.videoId === videoId);
+    if (existing) return sendJson(res, 200, { song: songView(existing), existing: true });
+    let title = clean(body.title, 120);
+    let artist = clean(body.artist, 80);
+    if (!title || !artist) {
+      const meta = await youtubeMeta(videoId);
+      if (meta) { title = title || clean(meta.title, 120); artist = artist || clean(meta.artist, 80); }
+    }
+    const song = {
+      id: newId(), type: 'youtube', videoId,
+      title: title || 'YouTube видео ' + videoId, artist: artist || 'Неизвестен изпълнител',
+      addedBy: clean(body.addedBy, 30) || 'Анонимен', createdAt: Date.now(),
+      duelWins: 0, defenses: 0, tipsTotal: 0,
+    };
+    db.songs.push(song);
+    save();
+    broadcast('library');
+    return sendJson(res, 200, { song: songView(song) });
+  }
+
+  // Качване на оригинална песен от артист
+  if (m === 'POST' && p === '/api/upload') {
+    const q = url.searchParams;
+    const title = clean(q.get('title'), 120);
+    const artist = clean(q.get('artist'), 80);
+    const ext = '.' + clean(q.get('ext'), 6).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!AUDIO_EXT.includes(ext)) throw new HttpError(400, 'Позволени формати: mp3, m4a, aac, wav, ogg, opus.');
+    if (!title || !artist) throw new HttpError(400, 'Въведи име на песента и артист.');
+    if (q.get('original') !== 'true') throw new HttpError(400, 'Потвърди, че песента е твоя оригинална музика.');
+    const file = await receiveUpload(req, ext);
+    const song = {
+      id: newId(), type: 'audio', audioUrl: '/uploads/' + file.name,
+      title, artist, addedBy: clean(q.get('addedBy'), 30) || artist, createdAt: Date.now(),
+      duelWins: 0, defenses: 0, tipsTotal: 0,
+    };
+    db.songs.push(song);
+    save();
+    broadcast('library');
+    return sendJson(res, 200, { song: songView(song) });
+  }
+
+  // Предизвикване на трона
+  if (m === 'POST' && p === '/api/challenge') {
+    const body = await readJson(req);
+    const song = songById(body.songId);
+    if (!song) throw new HttpError(404, 'Няма такава песен.');
+    const by = clean(body.by, 30) || 'Анонимен';
+    if (!db.throne) {
+      db.throne = { songId: song.id, since: Date.now() };
+      save(); broadcast('state');
+      return sendJson(res, 200, { ok: true, crowned: true });
+    }
+    if (db.throne.songId === song.id) throw new HttpError(400, 'Тази песен вече е на трона.');
+    if (db.duel && db.duel.challengerId === song.id) throw new HttpError(400, 'Тази песен е в дуел в момента.');
+    if (db.queue.some((x) => x.songId === song.id)) throw new HttpError(400, 'Тази песен вече чака за дуел.');
+    if (db.queue.length >= 50) throw new HttpError(400, 'Опашката е пълна, опитай по-късно.');
+    db.queue.push({ songId: song.id, challengedBy: by, at: Date.now() });
+    save(); broadcast('state');
+    tick();
+    return sendJson(res, 200, { ok: true, position: db.queue.length, startedNow: !!(db.duel && db.duel.challengerId === song.id) });
+  }
+
+  // Гласуване (един глас на човек на дуел, може да се смени)
+  if (m === 'POST' && p === '/api/vote') {
+    const body = await readJson(req);
+    const voterId = clean(body.voterId, 64);
+    if (!db.duel) throw new HttpError(400, 'В момента няма дуел.');
+    if (voterId.length < 8) throw new HttpError(400, 'Невалиден гласоподавател.');
+    if (body.side !== 'champion' && body.side !== 'challenger') throw new HttpError(400, 'Невалиден избор.');
+    if (body.duelId && body.duelId !== db.duel.id) throw new HttpError(400, 'Дуелът вече приключи.');
+    db.duel.votes[voterId] = body.side;
+    save(); broadcast('state');
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Бакшиш (ТЕСТОВ РЕЖИМ: не се теглят реални пари)
+  if (m === 'POST' && p === '/api/tip') {
+    const body = await readJson(req);
+    const song = songById(body.songId);
+    const amount = Math.round(Number(body.amount));
+    if (!song) throw new HttpError(404, 'Няма такава песен.');
+    if (song.type !== 'audio') throw new HttpError(400, 'Бакшиши има само за нови артисти с оригинална музика.');
+    if (!Number.isFinite(amount) || amount < 1 || amount > 100) throw new HttpError(400, 'Сумата трябва да е между 1 и 100 лв.');
+    db.tips.push({ songId: song.id, amount, by: clean(body.by, 30) || 'Анонимен', at: Date.now() });
+    song.tipsTotal = (song.tipsTotal || 0) + amount;
+    save(); broadcast('state'); broadcast('library');
+    return sendJson(res, 200, { ok: true, total: song.tipsTotal, test: true });
+  }
+
+  throw new HttpError(404, 'Няма такъв адрес.');
+}
+
+const server = http.createServer(async (req, res) => {
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); return res.end(); }
+  try {
+    if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
+    if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Методът не е позволен.');
+    const rel = decodeURIComponent(url.pathname);
+    if (rel.startsWith('/uploads/')) {
+      if (serveStatic(req, res, UPLOAD_DIR, rel.slice('/uploads/'.length))) return;
+    } else if (serveStatic(req, res, PUBLIC_DIR, rel === '/' ? 'index.html' : rel.slice(1))) return;
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Няма такава страница.');
+  } catch (err) {
+    const status = err instanceof HttpError ? err.status : 500;
+    if (status === 500) console.error(err);
+    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? 'Грешка в сървъра.' : err.message });
+    else res.end();
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`👑 BandCamper върви на http://localhost:${PORT}`);
+  console.log(`   Дуел: ${DUEL_SECONDS} сек · Пауза: ${BREAK_SECONDS} сек`);
+});

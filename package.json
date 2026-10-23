@@ -1,0 +1,15 @@
+{
+  "name": "bandcamper",
+  "version": "0.1.0",
+  "description": "Една песен, целият свят слуша. Дуели между песни, решени от слушателите.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node -e \"process.env.DUEL_SECONDS??='30';process.env.BREAK_SECONDS??='10';require('./server.js')\"",
+    "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true});console.log('Базата е изчистена')\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BandCamper</title>
+  <meta name="description" content="Една песен, целият свят слуша. Предизвикай трона и нека слушателите решат.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;900&family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👑</text></svg>">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="crown">👑</span>
+      <div>
+        <div class="logo">BandCamper</div>
+        <div class="tagline">една песен · целият свят слуша</div>
+      </div>
+    </div>
+    <label class="nick">
+      <span>Твоето име</span>
+      <input id="nick" maxlength="30" placeholder="Анонимен" autocomplete="nickname">
+    </label>
+  </header>
+
+  <main>
+    <!-- ТРОНЪТ -->
+    <section class="stage">
+      <div class="stage-head">
+        <span class="eyebrow">Сега на трона</span>
+        <span class="reign">царува от <b id="reign-timer">—</b></span>
+      </div>
+      <div class="stage-body">
+        <div class="player-wrap">
+          <div id="yt-holder" class="hidden"><div id="yt-player"></div></div>
+          <div id="cover" class="cover"><div class="cover-inner">👑</div></div>
+          <audio id="audio-player" preload="auto" loop></audio>
+        </div>
+        <div class="stage-info">
+          <div id="throne-info"></div>
+          <div class="controls">
+            <button id="listen-btn" class="btn primary big">▶ Слушай</button>
+            <div id="preview-banner" class="preview-banner hidden">
+              <span>Слушаш преглед на <b id="preview-title"></b></span>
+              <button id="back-btn" class="btn ghost small">↩ Върни се на трона</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ДУЕЛ -->
+    <section id="duel" class="card"></section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>⚔️ Чакат за дуел</h2>
+        <div id="queue" class="list"></div>
+      </section>
+      <section class="card">
+        <h2>🏆 Зала на славата</h2>
+        <p class="hint">Най-дългите царувания</p>
+        <ol id="hall" class="rank"></ol>
+      </section>
+      <section class="card">
+        <h2>🔎 Ловци на таланти</h2>
+        <p class="hint">Кой праща песни, които свалят трона</p>
+        <ol id="scouts" class="rank"></ol>
+      </section>
+      <section class="card">
+        <h2>📜 Последни дуели</h2>
+        <div id="recent" class="list"></div>
+      </section>
+    </div>
+
+    <!-- БИБЛИОТЕКА -->
+    <section class="card">
+      <div class="lib-head">
+        <h2>🎶 Библиотека</h2>
+        <div class="lib-tools">
+          <div class="seg" role="tablist">
+            <button class="seg-btn active" data-filter="all">Всички</button>
+            <button class="seg-btn" data-filter="original">Нови артисти</button>
+            <button class="seg-btn" data-filter="youtube">YouTube</button>
+          </div>
+          <input id="search" type="search" placeholder="Търси песен или артист…">
+        </div>
+      </div>
+      <div id="library" class="library"></div>
+    </section>
+
+    <!-- ДОБАВЯНЕ -->
+    <div class="grid two">
+      <section class="card">
+        <h2>Добави песен от YouTube</h2>
+        <p class="hint">Постави линк. Името и изпълнителят се попълват сами, ако ги оставиш празни.</p>
+        <form id="yt-form" class="form">
+          <input name="url" required placeholder="https://www.youtube.com/watch?v=…">
+          <div class="row2">
+            <input name="title" maxlength="120" placeholder="Име на песента (по желание)">
+            <input name="artist" maxlength="80" placeholder="Изпълнител (по желание)">
+          </div>
+          <label class="check"><input type="checkbox" name="challenge" checked> И я прати веднага на дуел</label>
+          <button class="btn primary" type="submit">Добави</button>
+        </form>
+      </section>
+      <section class="card artist-card">
+        <h2>Качи своя оригинална песен</h2>
+        <p class="hint">За артисти. Получаваш бакшиши от слушателите и влизаш в класацията „Нови артисти“.</p>
+        <form id="upload-form" class="form">
+          <label class="file">
+            <input type="file" name="audio" accept=".mp3,.m4a,.aac,.wav,.ogg,.opus,audio/*" required>
+            <span class="file-label">🎵 Избери аудио файл</span>
+          </label>
+          <div class="row2">
+            <input name="title" required maxlength="120" placeholder="Име на песента">
+            <input name="artist" required maxlength="80" placeholder="Артист">
+          </div>
+          <label class="check"><input type="checkbox" name="original" required> Потвърждавам, че песента е моя оригинална музика</label>
+          <label class="check"><input type="checkbox" name="challenge" checked> И я прати веднага на дуел</label>
+          <button class="btn gold" type="submit">Качи</button>
+        </form>
+      </section>
+    </div>
+
+    <footer class="foot">
+      Прототип · бакшишите са в тестов режим, не се теглят реални пари.
+    </footer>
+  </main>
+
+  <dialog id="tip-dialog">
+    <form method="dialog" class="tip-box">
+      <h3>💸 Бакшиш за <span id="tip-title"></span></h3>
+      <p class="hint">Тестов режим: не се теглят реални пари.</p>
+      <div class="amounts">
+        <button value="2" class="btn outline">2 лв.</button>
+        <button value="5" class="btn outline">5 лв.</button>
+        <button value="10" class="btn outline">10 лв.</button>
+        <button value="20" class="btn outline">20 лв.</button>
+      </div>
+      <button value="cancel" class="btn ghost small">Отказ</button>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
