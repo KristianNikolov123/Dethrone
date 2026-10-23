@@ -217,7 +217,7 @@
       </div>
       <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
     </div>
-    <p class="note" style="margin:0">Ако клипът има въведение или финал без музика, задай откъде да почва и къде да свършва песента.</p>
+    <p class="callout" id="trim-source"></p>
     <div class="row2">
       <label class="field"><span>Почва от</span>
         <span class="time-input"><input id="trim-start" placeholder="0:00" maxlength="8"><button type="button" class="btn small" data-now="start">Сега</button></span></label>
@@ -226,6 +226,7 @@
     </div>
     <p class="note" id="trim-now" style="margin:0"></p>
     <button type="submit" class="btn primary wide">Запази</button>
+    <button type="button" class="btn wide" id="trim-auto">Открий автоматично</button>
   </form>
 </dialog>
 

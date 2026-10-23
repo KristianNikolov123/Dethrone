@@ -150,6 +150,70 @@ function youtubeStart(input) {
   } catch { return null; }
 }
 
+// ---------- Автоматично откриване къде почва музиката ----------
+// SponsorBlock е безплатна общностна база, в която хората отбелязват частите без музика
+// в музикалните клипове (въведения, истории, финали). Оттам взимаме началото, края и
+// частите за прескачане по средата.
+const SB_CATEGORIES = ['music_offtopic', 'intro', 'outro'];
+async function detectMusic(videoId) {
+  const url = 'https://sponsor.ajay.app/api/skipSegments?videoID=' + encodeURIComponent(videoId) +
+    '&categories=' + encodeURIComponent(JSON.stringify(SB_CATEGORIES));
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'Dethrone/0.1' } });
+    if (r.status === 404) return { found: false };               // няма отбелязани части
+    if (!r.ok) return null;                                       // временна грешка, ще опитаме пак
+    const list = await r.json();
+    const duration = Math.max(0, ...list.map((x) => Number(x.videoDuration) || 0)) || null;
+    // Слепваме припокриващите се части
+    const segs = list
+      .filter((x) => x.actionType === 'skip' && Array.isArray(x.segment))
+      .map((x) => [Number(x.segment[0]), Number(x.segment[1])])
+      .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
+      .sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const [a, b] of segs) {
+      const last = merged[merged.length - 1];
+      if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b);
+      else merged.push([a, b]);
+    }
+    let startAt = 0;
+    let endAt = null;
+    const skips = [];
+    for (const [a, b] of merged) {
+      if (a <= 3) startAt = Math.round(b * 10) / 10;                              // въведение от самото начало
+      else if (duration && b >= duration - 3) endAt = Math.round(a * 10) / 10;     // финал до самия край
+      else skips.push([Math.round(a * 10) / 10, Math.round(b * 10) / 10]);         // история по средата
+    }
+    return { found: merged.length > 0, startAt, endAt, skips, duration };
+  } catch { return null; } finally { clearTimeout(t); }
+}
+
+// Записва откритото в песента, освен ако някой е задал началото и края ръчно
+async function applyDetection(song) {
+  if (!song || song.type !== 'youtube') return false;
+  const d = await detectMusic(song.videoId);
+  if (!d) return false;
+  song.detectedAt = Date.now();
+  song.detected = d.found ? { startAt: d.startAt, endAt: d.endAt, skips: d.skips } : null;
+  if (song.trimSource !== 'manual') {
+    song.startAt = d.found ? d.startAt : 0;
+    song.endAt = d.found ? d.endAt : null;
+    song.trimSource = d.found ? 'auto' : null;
+  }
+  song.skips = d.found ? d.skips : [];
+  return true;
+}
+
+// Песните, добавени преди тази функция, се проверяват веднъж на заден план
+async function detectMissing() {
+  for (const s of db.songs) {
+    if (s.type !== 'youtube' || s.detectedAt) continue;
+    if (await applyDetection(s)) { save(); broadcast('state'); broadcast('library'); }
+  }
+}
+
 // ---------- Изгледи за клиента ----------
 // viewer е гласоподавателят, за когото се строи отговорът (за да знаем дали може да редактира песента)
 let viewer = null;
@@ -166,7 +230,8 @@ function songView(s) {
     original: s.type === 'audio', addedBy: s.addedBy,
     duelWins: s.duelWins || 0, defenses: s.defenses || 0, tipsTotal: s.tipsTotal || 0,
     createdAt: s.createdAt,
-    startAt: s.startAt || 0, endAt: s.endAt || null,
+    startAt: s.startAt || 0, endAt: s.endAt || null, skips: s.skips || [],
+    trimSource: s.trimSource || null, autoAvailable: !!s.detected,
     canEdit: !s.addedById || (!!viewer && s.addedById === viewer),
     biggestFan: (biggestFanOf(s.artist) || {}).name || null,
   };
@@ -425,6 +490,15 @@ async function handleApi(req, res, url) {
     const voterId = clean(body.voterId, 64);
     if (!song) throw new HttpError(404, 'Няма такава песен.');
     if (song.addedById && song.addedById !== voterId) throw new HttpError(403, 'Само този, който е добавил песента, може да променя началото и края ѝ.');
+    // Връщане към автоматично откритото
+    if (body.auto) {
+      if (song.type !== 'youtube') throw new HttpError(400, 'Автоматичното откриване е само за песни от YouTube.');
+      song.trimSource = null;
+      const ok = await applyDetection(song);
+      if (!ok) throw new HttpError(502, 'Не успях да проверя песента. Опитай пак след малко.');
+      save(); broadcast('state'); broadcast('library');
+      return sendJson(res, 200, withViewer(voterId, () => ({ song: songView(song), found: song.trimSource === 'auto' })));
+    }
     const start = parseSeconds(body.startAt);
     const end = parseSeconds(body.endAt);
     if (Number.isNaN(start) || Number.isNaN(end)) throw new HttpError(400, 'Въведи време като 1:35 или в секунди.');
@@ -432,6 +506,7 @@ async function handleApi(req, res, url) {
     if (end !== null && end <= s0 + 5) throw new HttpError(400, 'Краят трябва да е поне 5 секунди след началото.');
     song.startAt = s0;
     song.endAt = end;
+    song.trimSource = 'manual';
     save(); broadcast('state'); broadcast('library');
     return sendJson(res, 200, withViewer(voterId, () => ({ song: songView(song) })));
   }
@@ -458,8 +533,11 @@ async function handleApi(req, res, url) {
       id: newId(), type: 'youtube', videoId,
       title: title || 'YouTube видео ' + videoId, artist: artist || 'Неизвестен изпълнител',
       addedBy: clean(body.addedBy, 30) || 'Анонимен', addedById: adderId, createdAt: Date.now(),
-      duelWins: 0, defenses: 0, tipsTotal: 0, startAt: startAt || 0, endAt: null,
+      duelWins: 0, defenses: 0, tipsTotal: 0, startAt: startAt || 0, endAt: null, skips: [],
+      trimSource: startAt ? 'manual' : null,
     };
+    // Откриваме къде почва музиката, преди песента да влезе в списъка
+    await applyDetection(song);
     db.songs.push(song);
     save();
     broadcast('library');
@@ -628,6 +706,8 @@ const server = http.createServer(async (req, res) => {
     else res.end();
   }
 });
+
+setTimeout(detectMissing, 2000);
 
 server.listen(PORT, () => {
   console.log(`👑 Dethrone върви на http://localhost:${PORT}`);
