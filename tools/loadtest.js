@@ -15,14 +15,13 @@ const agent = new lib.Agent({ keepAlive: true, maxSockets: 2000 });
 
 const stats = { requests: 0, errors: 0, bytes: 0, refetches: 0, events: 0, voteMs: [], stateMs: [] };
 
-function request(method, path, body) {
+function request(method, path, body, cookie) {
   return new Promise((resolve) => {
     const t0 = performance.now();
     const data = body ? Buffer.from(JSON.stringify(body)) : null;
-    const req = lib.request(BASE + path, {
-      method, agent,
-      headers: data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {},
-    }, (res) => {
+    const headers = data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {};
+    if (cookie) headers.Cookie = cookie;
+    const req = lib.request(BASE + path, { method, agent, headers }, (res) => {
       let n = 0;
       const chunks = [];
       res.on('data', (c) => { n += c.length; chunks.push(c); });
@@ -30,7 +29,8 @@ function request(method, path, body) {
         stats.requests++;
         stats.bytes += n;
         if (res.statusCode >= 500) stats.errors++;
-        resolve({ ms: performance.now() - t0, status: res.statusCode, body: Buffer.concat(chunks).toString() });
+        const setCookie = [].concat(res.headers['set-cookie'] || []).map((c) => c.split(';')[0]).join('; ');
+        resolve({ ms: performance.now() - t0, status: res.statusCode, body: Buffer.concat(chunks).toString(), setCookie });
       });
     });
     req.on('error', () => { stats.errors++; resolve({ ms: performance.now() - t0, status: 0, body: '' }); });
@@ -42,8 +42,12 @@ function request(method, path, body) {
 
 // Един „браузър“: отваря живите обновления и прави това, което прави страницата.
 // Ако съобщението носи само сигнал (без данни), браузърът пита сървъра наново, както в старата версия.
-function openClient(i) {
+// Всеки браузър влиза с тестов вход (работи само на сървър без Google/Discord, пуснат локално)
+async function openClient(i) {
   const voterId = `load-${i}-${Math.random().toString(36).slice(2, 10)}`;
+  const login = await request('POST', '/auth/dev', { name: voterId });
+  if (login.status !== 200) throw new Error('Тестовият вход не е разрешен. Пусни сървъра локално без Google/Discord или с DEV_LOGIN=1.');
+  const cookie = login.setCookie;
   return new Promise((resolve) => {
     const req = lib.get(BASE + '/api/events', { agent: false }, (res) => {
       let buf = '';
@@ -60,13 +64,13 @@ function openClient(i) {
           stats.events++;
           if (ev === 'state' && data.length < 20) {
             stats.refetches++;
-            request('GET', '/api/state?voterId=' + voterId).then((r) => stats.stateMs.push(r.ms));
+            request('GET', '/api/state', null, cookie).then((r) => stats.stateMs.push(r.ms));
           }
         }
       });
-      resolve({ voterId, req });
+      resolve({ voterId, cookie, req });
     });
-    req.on('error', () => { stats.errors++; resolve({ voterId, req }); });
+    req.on('error', () => { stats.errors++; resolve({ voterId, cookie, req }); });
   });
 }
 
@@ -77,6 +81,7 @@ const pct = (arr, p) => {
 };
 
 async function setup() {
+  const admin = (await request('POST', '/auth/dev', { name: 'Натоварване' })).setCookie;
   // Две песни като качени файлове (без нужда от интернет), едната на трона, другата в дуел
   const wav = Buffer.alloc(44 + 16000);
   wav.write('RIFF', 0); wav.writeUInt32LE(36 + 16000, 4); wav.write('WAVE', 8); wav.write('fmt ', 12);
@@ -86,15 +91,15 @@ async function setup() {
   for (const title of ['Тест А', 'Тест Б']) {
     const q = new URLSearchParams({ title: title + ' ' + Date.now(), artist: 'Натоварване', original: 'true', ext: 'wav' });
     const r = await new Promise((resolve) => {
-      const req = lib.request(BASE + '/api/upload?' + q, { method: 'POST', headers: { 'Content-Type': 'audio/wav', 'Content-Length': wav.length } }, (res) => {
+      const req = lib.request(BASE + '/api/upload?' + q, { method: 'POST', headers: { 'Content-Type': 'audio/wav', 'Content-Length': wav.length, Cookie: admin } }, (res) => {
         let s = ''; res.on('data', (c) => { s += c; }); res.on('end', () => resolve(s));
       });
       req.end(wav);
     });
     ids.push(JSON.parse(r).song.id);
   }
-  await request('POST', '/api/challenge', { songId: ids[0], by: 'тест' });
-  await request('POST', '/api/challenge', { songId: ids[1], by: 'тест' });
+  await request('POST', '/api/challenge', { songId: ids[0] }, admin);
+  await request('POST', '/api/challenge', { songId: ids[1] }, admin);
   const st = JSON.parse((await request('GET', '/api/state')).body);
   if (!st.duel) throw new Error('Няма активен дуел. Пусни сървъра с дълъг дуел, например DUEL_SECONDS=600.');
 }
@@ -112,7 +117,7 @@ async function setup() {
     for (let k = 0; k < VOTES_PER_SEC / 10; k++) {
       const c = clients[Math.floor(Math.random() * clients.length)];
       const side = Math.random() < 0.5 ? 'champion' : 'challenger';
-      request('POST', '/api/vote', { voterId: c.voterId, side, name: 'Тест' }).then((r) => {
+      request('POST', '/api/vote', { side }, c.cookie).then((r) => {
         stats.voteMs.push(r.ms);
         if (r.status === 429) stats.limited = (stats.limited || 0) + 1;
       });

@@ -19,12 +19,11 @@
   };
 
   // ---------- Потребител ----------
-  let voterId = lsGet('bc_voter');
-  if (!voterId) { voterId = uid(); lsSet('bc_voter', voterId); }
-  const nickInput = $('#nick');
-  nickInput.value = lsGet('bc_nick') || '';
-  nickInput.addEventListener('input', () => lsSet('bc_nick', nickInput.value.trim()));
-  const nick = () => nickInput.value.trim() || ANON;
+  // Идентификаторът на браузъра от времето преди акаунтите: при първия вход точките от него се прехвърлят към акаунта
+  const legacyVoterId = lsGet('bc_voter');
+  let account = null;          // влезлият потребител или null
+  let loginOptions = { providers: [], devLogin: false };
+  const nick = () => account?.name || ANON;
 
   // ---------- Състояние ----------
   let state = null;
@@ -105,13 +104,13 @@
 
   // Пълното състояние заедно с личните данни: при отваряне на страницата и след собствени действия
   async function refresh() {
-    try { applyState(await api('/api/state?voterId=' + encodeURIComponent(voterId))); }
+    try { applyState(await api('/api/state')); }
     catch (e) { console.error(e); }
   }
 
   async function loadLibrary() {
     try {
-      library = (await api('/api/songs?voterId=' + encodeURIComponent(voterId))).songs;
+      library = (await api('/api/songs')).songs;
       for (const s of library) if (s.canEdit) myEditable.add(s.id);
       indexSongs(library);
       renderLibrary();
@@ -773,7 +772,7 @@
     const btn = $('#trim-auto');
     btn.disabled = true;
     try {
-      const r = await post(`/api/songs/${trimSong.id}/trim`, { voterId, auto: true });
+      const r = await post(`/api/songs/${trimSong.id}/trim`, { auto: true });
       indexSongs([r.song]);
       trimDialog.close();
       toast(r.found ? `Открито: музиката почва на ${fmtTime(r.song.startAt)}.` : 'За този клип няма данни. Върви от самото начало.');
@@ -801,7 +800,7 @@
     if (!trimSong) return;
     try {
       const r = await post(`/api/songs/${trimSong.id}/trim`, {
-        voterId, startAt: $('#trim-start').value.trim(), endAt: $('#trim-end').value.trim(),
+        startAt: $('#trim-start').value.trim(), endAt: $('#trim-end').value.trim(),
       });
       indexSongs([r.song]);
       trimDialog.close();
@@ -814,8 +813,9 @@
 
   // ---------- Действия ----------
   async function challenge(songId) {
+    if (needLogin('Влез, за да предизвикаш трона.')) return;
     try {
-      const r = await post('/api/challenge', { songId, by: nick() });
+      const r = await post('/api/challenge', { songId });
       if (r.crowned) toast('Песента зае трона.');
       else if (r.startedNow) toast('Дуелът започна. Гласувай.');
       else toast(`Добавена в опашката, на ${r.position}. място.`);
@@ -824,8 +824,9 @@
   }
 
   async function vote(side) {
+    if (needLogin('Влез, за да гласуваш.')) return;
     try {
-      const r = await post('/api/vote', { voterId, side, duelId: state?.duel?.id, name: nick() });
+      const r = await post('/api/vote', { side, duelId: state?.duel?.id });
       // Гласът се отбелязва веднага; новият брой гласове идва с живото обновление
       myVotes[r.duelId] = r.side;
       if (state?.duel && state.duel.id === r.duelId) {
@@ -844,6 +845,7 @@
   }
   $$('[data-addtab]').forEach((b) => b.addEventListener('click', () => showAddTab(b.dataset.addtab)));
   function openAdd(query) {
+    if (needLogin('Влез, за да добавяш песни.')) return;
     showAddTab('search');
     if (!addDialog.open) addDialog.showModal();
     const input = $('#yt-q');
@@ -926,7 +928,7 @@
     renderResults();
     try {
       const res = await post('/api/songs', {
-        url: 'https://www.youtube.com/watch?v=' + r.videoId, title: r.title, artist: r.artist, addedBy: nick(), voterId,
+        url: 'https://www.youtube.com/watch?v=' + r.videoId, title: r.title, artist: r.artist,
       });
       indexSongs([res.song]);
       r.songId = res.song.id;
@@ -945,7 +947,7 @@
     btn.disabled = true;
     try {
       const r = await post('/api/songs', {
-        url: f.url.value, title: f.title.value, artist: f.artist.value, startAt: f.startAt.value.trim(), addedBy: nick(), voterId,
+        url: f.url.value, title: f.title.value, artist: f.artist.value, startAt: f.startAt.value.trim(),
       });
       indexSongs([r.song]);
       if (f.challenge.checked) await challenge(r.song.id);
@@ -975,8 +977,8 @@
     if (!file) { toast('Избери аудио файл.', true); return; }
     const ext = (file.name.match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase();
     const params = new URLSearchParams({
-      title: f.title.value, artist: f.artist.value, addedBy: nick(),
-      original: f.original.checked ? 'true' : 'false', ext, voterId,
+      title: f.title.value, artist: f.artist.value,
+      original: f.original.checked ? 'true' : 'false', ext,
     });
     btn.disabled = true;
     btn.textContent = 'Качване…';
@@ -1012,6 +1014,7 @@
   }
 
   async function openTip(songId) {
+    if (needLogin('Влез, за да пращаш бакшиши.')) return;
     const s = songIndex.get(songId);
     if (!s) return;
     tipSongId = songId;
@@ -1026,8 +1029,8 @@
     note.textContent = '';
     tipDialog.showModal();
     try {
-      const a = await api(`/api/artist?name=${encodeURIComponent(s.artist)}&voterId=${encodeURIComponent(voterId)}`);
-      if (nick() === ANON) note.textContent = 'Напиши името си горе, за да можеш да станеш най-голям фен на артиста.';
+      const a = await api(`/api/artist?name=${encodeURIComponent(s.artist)}`);
+      if (!account) note.textContent = 'Влез, за да можеш да станеш най-голям фен на артиста.';
       else if (a.fans.some((f) => f.isMe && f.isBiggestFan)) note.textContent = `Ти си най-големият фен на ${a.artist}. Всяко евро ти носи ${a.points.euro} точки.`;
       else if (a.biggestFan) {
         const mine = a.me ? a.me.score : 0;
@@ -1055,7 +1058,7 @@
     const btn = $('#tip-submit');
     btn.disabled = true;
     try {
-      const r = await post('/api/tip', { songId: tipSongId, amount, by: nick(), voterId, message: $('#tip-message').value });
+      const r = await post('/api/tip', { songId: tipSongId, amount, message: $('#tip-message').value });
       tipDialog.close();
       toast(r.becameBiggestFan ? 'Изпратено. Вече си най-големият фен на артиста.' : `Изпратено: ${eur(amount)}. Тестов режим.`);
       loadBadges();
@@ -1072,7 +1075,7 @@
     body.innerHTML = '<p class="muted">Зарежда се…</p>';
     if (!artistDialog.open) artistDialog.showModal();
     try {
-      const a = await api(`/api/artist?name=${encodeURIComponent(name)}&voterId=${encodeURIComponent(voterId)}`);
+      const a = await api(`/api/artist?name=${encodeURIComponent(name)}`);
       indexSongs(a.songs);
       const tipSong = a.songs.find((s) => s.original);
       head.innerHTML = `<div class="artist-name">${esc(a.artist)}</div>
@@ -1117,7 +1120,7 @@
   let me = null;
   async function loadBadges() {
     try {
-      me = await api('/api/me?voterId=' + encodeURIComponent(voterId));
+      me = await api('/api/me');
       $('#badge-count').textContent = me.badges.length;
       $('#badges-btn').classList.toggle('has', me.badges.length > 0);
       if (badgesDialog.open) renderBadges();
@@ -1127,7 +1130,7 @@
     const body = $('#badges-body');
     if (!me) { body.innerHTML = '<p class="muted">Зарежда се…</p>'; return; }
     body.innerHTML = `
-      ${nick() === ANON ? '<p class="callout">Напиши името си горе. Значки получават само фенове с име.</p>' : ''}
+      ${account ? '' : '<p class="callout">Влез, за да трупаш точки и да печелиш значки.</p>'}
       <p class="note" style="margin:0">Ставаш най-голям фен на артист, когато имаш най-много точки за него. Всеки глас носи ${me.points.vote} точка, всяко евро бакшиш носи ${me.points.euro}.</p>
       ${me.supported.length ? `<div>${me.supported.map((s) => `
         <div class="row">
@@ -1188,6 +1191,106 @@
   });
   $('#search').addEventListener('input', renderLibrary);
 
+  // ---------- Вход и профил ----------
+  const loginDialog = $('#login-dialog');
+  const accountDialog = $('#account-dialog');
+  const PROVIDER_NAMES = { google: 'Google', discord: 'Discord', dev: 'тестов вход' };
+
+  function needLogin(reason) {
+    if (account) return false;
+    openLogin(reason);
+    return true;
+  }
+  function openLogin(reason) {
+    $('#login-reason').textContent = reason || 'Влез, за да гласуваш, добавяш песни и трупаш точки.';
+    const box = $('#login-providers');
+    box.innerHTML = loginOptions.providers.map((p) =>
+      `<a class="btn wide" href="/auth/${esc(p.id)}"><span class="mark">${esc(p.label.charAt(0))}</span>Продължи с ${esc(p.label)}</a>`).join('');
+    if (!loginOptions.providers.length && !loginOptions.devLogin) {
+      box.innerHTML = '<p class="callout">Входът още не е настроен на този сървър.</p>';
+    }
+    $('#dev-login').classList.toggle('hidden', !loginOptions.devLogin);
+    if (!loginDialog.open) loginDialog.showModal();
+  }
+  function renderAccount() {
+    $('#login-btn').classList.toggle('hidden', !!account);
+    $('#account-btn').classList.toggle('hidden', !account);
+    if (!account) return;
+    $('#account-name').textContent = account.name;
+    const av = $('#account-avatar');
+    if (account.avatar && /^https:\/\//.test(account.avatar)) {
+      av.style.backgroundImage = `url("${account.avatar.replace(/"/g, '')}")`;
+      av.textContent = '';
+    } else {
+      av.style.backgroundImage = '';
+      av.textContent = account.name.trim().charAt(0).toUpperCase();
+    }
+  }
+  async function loadSession() {
+    try {
+      const s = await api('/api/session');
+      account = s.user;
+      loginOptions = { providers: s.providers || [], devLogin: !!s.devLogin };
+    } catch { account = null; }
+    renderAccount();
+    // Точките, натрупани в този браузър преди акаунтите, се прехвърлят веднъж
+    if (account && legacyVoterId && !lsGet('bc_claimed')) {
+      try {
+        const r = await post('/api/session/claim', { voterId: legacyVoterId });
+        lsSet('bc_claimed', '1');
+        if (r.moved) toast('Точките ти от този браузър са прехвърлени към профила.');
+      } catch { /* ще опитаме при следващото отваряне */ }
+    }
+  }
+  async function afterLoginChange() {
+    await loadSession();
+    refresh();
+    loadLibrary();
+    loadBadges();
+  }
+  function handleLoginResult() {
+    const r = new URLSearchParams(location.search).get('login');
+    if (!r) return;
+    history.replaceState(null, '', location.pathname);
+    if (r === 'ok') toast(account ? `Здравей, ${account.name}!` : 'Влезе успешно.');
+    else if (r === 'unavailable') toast('Този начин за вход не е настроен.', true);
+    else toast('Входът не мина. Опитай пак.', true);
+  }
+
+  $('#login-btn').addEventListener('click', () => openLogin());
+  $('#dev-login').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await post('/auth/dev', { name: e.target.displayName.value.trim() });
+      loginDialog.close();
+      await afterLoginChange();
+      toast(`Здравей, ${account?.name}!`);
+    } catch (err) { toast(err.message, true); }
+  });
+  $('#account-btn').addEventListener('click', () => {
+    if (!account) return;
+    $('#account-name-input').value = account.name;
+    $('#account-via').textContent = `Влязъл си с ${PROVIDER_NAMES[account.provider] || account.provider}.`;
+    accountDialog.showModal();
+  });
+  $('#account-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const r = await post('/api/session/name', { name: $('#account-name-input').value.trim() });
+      account = r.user;
+      renderAccount();
+      accountDialog.close();
+      toast('Името е сменено.');
+    } catch (err) { toast(err.message, true); }
+  });
+  $('#logout-btn').addEventListener('click', async () => {
+    try { await post('/auth/logout', {}); } catch { /* ignore */ }
+    accountDialog.close();
+    await afterLoginChange();
+    toast('Излезе от профила.');
+  });
+
+  loadSession().then(handleLoginResult);
   refresh();
   loadLibrary();
 })();

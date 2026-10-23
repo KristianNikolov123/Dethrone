@@ -91,6 +91,36 @@ node tools/loadtest.js http://localhost:3000 2000 200 15
 
 Пример: `DUEL_SECONDS=60 npm start`
 
+### Вход с Google и Discord
+
+Слушането е свободно, а гласуването, добавянето на песни, търсенето и бакшишите изискват вход. Точките, натрупани в браузъра преди входа, се прехвърлят към акаунта автоматично.
+
+Без настроени Google и Discord, на собствения ти компютър (`localhost`) има **тестов вход** само с име. На сървър в интернет тестовият вход е изключен.
+
+**Google** (около 5 минути):
+1. [Google Cloud Console](https://console.cloud.google.com/) → проекта ти → **Google Auth Platform** (или **APIs & Services → OAuth consent screen**).
+2. Попълни име на приложението (Dethrone) и имейл за поддръжка; за аудитория избери **External**.
+3. **Clients → Create client → Web application**. В **Authorized redirect URIs** добави `https://dethrone.up.railway.app/auth/google/callback` (и по желание `http://localhost:3000/auth/google/callback` за локално тестване).
+4. Копирай **Client ID** и **Client secret**.
+5. В **Audience** натисни **Publish app**, за да могат да влизат всички, не само тестови потребители. Приложението иска само име и снимка, които не изискват проверка от Google.
+
+**Discord** (около 3 минути):
+1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application** → име Dethrone.
+2. **OAuth2** → копирай **Client ID**, натисни **Reset Secret** и копирай тайната.
+3. В **Redirects** добави `https://dethrone.up.railway.app/auth/discord/callback` и запази.
+
+**Настройки** (в Railway → Variables, или във файла `.env` локално):
+
+```
+PUBLIC_URL=https://dethrone.up.railway.app
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+DISCORD_CLIENT_ID=...
+DISCORD_CLIENT_SECRET=...
+```
+
+`PUBLIC_URL` трябва да съвпада точно с адреса в redirect адресите. Ключът за сесиите се създава сам и се пази на диска; ако искаш да го зададеш ръчно, сложи `SESSION_SECRET` (поне 32 случайни знака).
+
 ### Качване в Railway
 
 1. В Railway създай нов проект (или добави услуга в съществуващ) от GitHub репото `KristianNikolov123/Dethrone`. Railway разпознава Node.js и пуска `npm start` сам.

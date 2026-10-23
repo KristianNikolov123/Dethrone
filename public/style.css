@@ -367,6 +367,20 @@ dialog[open] { animation: rise .16s ease-out; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.bad { background: var(--live); color: #fff; }
 
+/* ---------- Вход и профил ---------- */
+.account { gap: 8px; padding: 0 12px 0 6px; max-width: 200px; }
+.account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar {
+  width: 24px; height: 24px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: var(--surface-2) center / cover no-repeat; color: var(--muted); font-size: 12px; font-weight: 700;
+}
+.login-providers { display: flex; flex-direction: column; gap: 8px; }
+.login-providers .btn { height: 46px; justify-content: flex-start; padding: 0 16px; font-size: 15px; }
+.login-providers .btn .mark {
+  width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; font-weight: 800; font-size: 14px;
+  background: var(--surface-2); color: var(--text);
+}
+
 /* ---------- Търсене в YouTube ---------- */
 .add-search { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .search-bar { display: flex; gap: 8px; }
@@ -463,7 +477,7 @@ dialog[open] { animation: rise .16s ease-out; }
   .topbar { padding: 10px 14px; height: auto; }
   #add-btn span { display: none; }
   #add-btn { padding: 0 10px; }
-  .nick input { width: 78px; }
+  .account { max-width: 120px; }
   .stage { padding: 12px 14px; justify-content: flex-start; }
   .stage-inner { width: 100%; min-width: 0; gap: 12px; }
   .video { width: min(100%, 32dvh * 16 / 9); }
@@ -507,3 +521,5 @@ dialog[open] { animation: rise .16s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+a.btn { text-decoration: none; }

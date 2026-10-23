@@ -25,11 +25,11 @@
         <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
         <span>Добави песен</span>
       </button>
-      <label class="nick" title="Името ти се показва в класациите">
-        <span class="sr-only">Твоето име</span>
-        <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7" r="3.5"/><path d="M3.5 17c1.2-3 3.6-4.5 6.5-4.5s5.3 1.5 6.5 4.5"/></svg>
-        <input id="nick" maxlength="30" placeholder="Твоето име" autocomplete="nickname">
-      </label>
+      <button id="login-btn" class="btn primary">Вход</button>
+      <button id="account-btn" class="btn account hidden" title="Профил">
+        <span id="account-avatar" class="avatar" aria-hidden="true"></span>
+        <span id="account-name" class="account-name"></span>
+      </button>
       <button id="badges-btn" class="btn icon-btn" title="Моите значки" aria-label="Моите значки">
         <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="12" r="5"/><path d="M7 7.5L5 2h3l2 4 2-4h3l-2 5.5"/></svg>
         <span id="badge-count" class="count">0</span>
@@ -239,6 +239,40 @@
     <p class="note" id="trim-now" style="margin:0"></p>
     <button type="submit" class="btn primary wide">Запази</button>
     <button type="button" class="btn wide" id="trim-auto">Открий автоматично</button>
+  </form>
+</dialog>
+
+<!-- ВХОД -->
+<dialog id="login-dialog">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <h3>Вход в Dethrone</h3>
+        <p class="note" id="login-reason">Влез, за да гласуваш, добавяш песни и трупаш точки.</p>
+      </div>
+      <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+    </div>
+    <div id="login-providers" class="login-providers"></div>
+    <form id="dev-login" class="form hidden">
+      <p class="note" style="margin:0">Google и Discord още не са настроени. Тестовият вход работи само на този компютър.</p>
+      <label class="field"><span>Име</span><input name="displayName" maxlength="30" required placeholder="Как да те показваме"></label>
+      <button class="btn wide" type="submit">Тестов вход</button>
+    </form>
+    <p class="note center" style="margin:0">Взимаме само името и снимката на профила ти. Слушането остава свободно и без вход.</p>
+  </div>
+</dialog>
+
+<!-- ПРОФИЛ -->
+<dialog id="account-dialog">
+  <form id="account-form" class="modal">
+    <div class="modal-head">
+      <h3>Профил</h3>
+      <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+    </div>
+    <p class="note" id="account-via" style="margin:0"></p>
+    <label class="field"><span>Име, което виждат другите</span><input id="account-name-input" maxlength="30" required></label>
+    <button class="btn primary wide" type="submit">Запази името</button>
+    <button class="btn wide" type="button" id="logout-btn">Изход</button>
   </form>
 </dialog>
 

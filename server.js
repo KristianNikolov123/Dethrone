@@ -46,6 +46,8 @@ const emptyDb = () => ({
   tips: [],       // тестови бакшиши {id,songId,artist,amount,by,voterId,message,at}
   fans: {},       // {voterId: {name}}
   fanStats: {},   // {artistKey: {voterId: {votes, tips}}}
+  users: {},      // {uid: {id, provider, name, avatar, createdAt, lastLoginAt}}
+  claims: {},     // {стар идентификатор на браузъра: uid}, за да се прехвърли само веднъж
   nextDuelAt: 0,
 });
 
@@ -144,6 +146,228 @@ function biggestFanOf(artist) {
   const top = first ? { voterId: first.voterId, name: first.name, score: first.score } : null;
   bigFanCache.set(key, { v: fanVersion, top });
   return top;
+}
+
+// ---------- Акаунти: вход с Google и Discord ----------
+// Стандартен OAuth вход без външни пакети. Сесията е подписана бисквитка (HttpOnly), валидна 60 дни.
+const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+const PROVIDERS = {
+  google: {
+    label: 'Google',
+    clientId: process.env.GOOGLE_CLIENT_ID, secret: process.env.GOOGLE_CLIENT_SECRET,
+    authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    userUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
+    scope: 'openid profile',
+    extra: { prompt: 'select_account' },
+    profile: (u) => ({ id: u.sub, name: u.name || u.given_name, avatar: u.picture || null }),
+  },
+  discord: {
+    label: 'Discord',
+    clientId: process.env.DISCORD_CLIENT_ID, secret: process.env.DISCORD_CLIENT_SECRET,
+    authUrl: 'https://discord.com/oauth2/authorize',
+    tokenUrl: 'https://discord.com/api/oauth2/token',
+    userUrl: 'https://discord.com/api/users/@me',
+    scope: 'identify',
+    extra: {},
+    profile: (u) => ({
+      id: u.id, name: u.global_name || u.username,
+      avatar: u.avatar ? `https://cdn.discordapp.com/avatars/${u.id}/${u.avatar}.png?size=64` : null,
+    }),
+  },
+};
+// Само за автоматични тестове: фалшив Google/Discord на друг адрес
+if (process.env.OAUTH_MOCK_BASE) {
+  for (const [k, prov] of Object.entries(PROVIDERS)) {
+    prov.authUrl = `${process.env.OAUTH_MOCK_BASE}/${k}/auth`;
+    prov.tokenUrl = `${process.env.OAUTH_MOCK_BASE}/${k}/token`;
+    prov.userUrl = `${process.env.OAUTH_MOCK_BASE}/${k}/user`;
+  }
+}
+const ENABLED_PROVIDERS = Object.keys(PROVIDERS).filter((k) => PROVIDERS[k].clientId && PROVIDERS[k].secret);
+const DEV_LOGIN = process.env.DEV_LOGIN === '1';
+const SESSION_DAYS = 60;
+
+// Ключът за подписване на сесиите: от SESSION_SECRET или създаден веднъж и пазен на диска
+function loadSessionSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  const file = path.join(DATA_DIR, 'session-secret');
+  try { const s = fs.readFileSync(file, 'utf8').trim(); if (s.length >= 32) return s; } catch { /* няма */ }
+  const s = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(file, s, { mode: 0o600 });
+  return s;
+}
+const SESSION_SECRET = loadSessionSecret();
+
+function sign(obj) {
+  const body = Buffer.from(JSON.stringify(obj)).toString('base64url');
+  const mac = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+  return `${body}.${mac}`;
+}
+function unsign(token) {
+  if (!token) return null;
+  const [body, mac] = String(token).split('.');
+  if (!body || !mac) return null;
+  const good = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+  if (good.length !== mac.length || !crypto.timingSafeEqual(Buffer.from(good), Buffer.from(mac))) return null;
+  try {
+    const o = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    return o.exp && o.exp < Date.now() ? null : o;
+  } catch { return null; }
+}
+function readCookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) { try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch { /* ignore */ } }
+  }
+  return out;
+}
+function isHttps(req) {
+  return PUBLIC_URL.startsWith('https://') ||
+    (TRUST_PROXY && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https');
+}
+function setCookie(res, req, name, value, maxAgeSec) {
+  const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAgeSec}`];
+  if (isHttps(req)) parts.push('Secure');
+  const prev = res.getHeader('Set-Cookie');
+  res.setHeader('Set-Cookie', [...(prev ? [].concat(prev) : []), parts.join('; ')]);
+}
+function baseUrl(req) {
+  if (PUBLIC_URL) return PUBLIC_URL;
+  const host = (TRUST_PROXY && req.headers['x-forwarded-host']) || req.headers.host;
+  return `${isHttps(req) ? 'https' : 'http'}://${host}`;
+}
+const devLoginAllowed = (req) => DEV_LOGIN || (!ENABLED_PROVIDERS.length && isLocal(req.socket.remoteAddress || ''));
+
+function currentUser(req) {
+  const s = unsign(readCookies(req).dt_session);
+  return s && s.uid ? db.users[s.uid] || null : null;
+}
+function requireUser(req) {
+  const u = currentUser(req);
+  if (!u) throw new HttpError(401, 'Влез с Google или Discord, за да направиш това.');
+  return u;
+}
+function userView(u) {
+  return u ? { id: u.id, name: u.name, avatar: u.avatar || null, provider: u.provider } : null;
+}
+
+function loginUser(res, req, provider, providerId, name, avatar) {
+  const uid = 'u_' + crypto.createHash('sha256').update(`${provider}:${providerId}`).digest('hex').slice(0, 16);
+  let u = db.users[uid];
+  if (!u) u = db.users[uid] = { id: uid, provider, name: clean(name, 30) || 'Слушател', avatar: avatar || null, createdAt: Date.now() };
+  else if (avatar) u.avatar = avatar;  // името не се презаписва: потребителят може да го е сменил
+  u.lastLoginAt = Date.now();
+  rememberFan(uid, u.name);
+  save();
+  setCookie(res, req, 'dt_session', sign({ uid, exp: Date.now() + SESSION_DAYS * 864e5 }), SESSION_DAYS * 86400);
+  return u;
+}
+
+// Прехвърля точките, песните и гласа от стария идентификатор на браузъра към акаунта (веднъж)
+function claimBrowserData(oldId, uid) {
+  if (!oldId || oldId === uid || db.claims[oldId] || oldId.startsWith('u_')) return { moved: false };
+  let moved = 0;
+  for (const board of Object.values(db.fanStats)) {
+    const st = board[oldId];
+    if (!st) continue;
+    const mine = board[uid] || (board[uid] = { votes: 0, tips: 0 });
+    mine.votes += st.votes;
+    mine.tips += st.tips;
+    delete board[oldId];
+    moved++;
+  }
+  for (const s of db.songs) if (s.addedById === oldId) { s.addedById = uid; moved++; }
+  for (const t of db.tips) if (t.voterId === oldId) t.voterId = uid;
+  if (db.duel && db.duel.votes[oldId]) {
+    if (!db.duel.votes[uid]) db.duel.votes[uid] = db.duel.votes[oldId];
+    delete db.duel.votes[oldId];
+  }
+  delete db.fans[oldId];
+  db.claims[oldId] = uid;
+  fanVersion++;
+  return { moved: moved > 0 };
+}
+
+async function oauthExchange(provider, code, redirectUri) {
+  const p = PROVIDERS[provider];
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const tr = await fetch(p.tokenUrl, {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({
+        client_id: p.clientId, client_secret: p.secret, code, grant_type: 'authorization_code', redirect_uri: redirectUri,
+      }),
+    });
+    const tok = await tr.json().catch(() => ({}));
+    if (!tr.ok || !tok.access_token) throw new Error('token ' + tr.status + ' ' + (tok.error || ''));
+    const ur = await fetch(p.userUrl, { signal: ctrl.signal, headers: { Authorization: `Bearer ${tok.access_token}` } });
+    const raw = await ur.json().catch(() => ({}));
+    if (!ur.ok) throw new Error('user ' + ur.status);
+    const prof = p.profile(raw);
+    if (!prof.id) throw new Error('no id');
+    return prof;
+  } finally { clearTimeout(t); }
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' });
+  res.end();
+}
+
+async function handleAuth(req, res, url) {
+  const p = url.pathname;
+  // /auth/google, /auth/discord → към страницата за вход
+  let m = p.match(/^\/auth\/(google|discord)$/);
+  if (m && req.method === 'GET') {
+    const provider = m[1];
+    if (!ENABLED_PROVIDERS.includes(provider)) return redirect(res, '/?login=unavailable');
+    const state = crypto.randomBytes(16).toString('hex');
+    setCookie(res, req, 'dt_oauth', sign({ state, provider, exp: Date.now() + 10 * 60e3 }), 600);
+    const prov = PROVIDERS[provider];
+    const q = new URLSearchParams({
+      client_id: prov.clientId, redirect_uri: `${baseUrl(req)}/auth/${provider}/callback`,
+      response_type: 'code', scope: prov.scope, state, ...prov.extra,
+    });
+    return redirect(res, `${prov.authUrl}?${q}`);
+  }
+  // Връщане от Google/Discord
+  m = p.match(/^\/auth\/(google|discord)\/callback$/);
+  if (m && req.method === 'GET') {
+    const provider = m[1];
+    const saved = unsign(readCookies(req).dt_oauth);
+    setCookie(res, req, 'dt_oauth', '', 0);
+    const code = url.searchParams.get('code');
+    if (!ENABLED_PROVIDERS.includes(provider) || !code || !saved ||
+        saved.provider !== provider || saved.state !== url.searchParams.get('state')) {
+      return redirect(res, '/?login=error');
+    }
+    try {
+      const prof = await oauthExchange(provider, code, `${baseUrl(req)}/auth/${provider}/callback`);
+      loginUser(res, req, provider, prof.id, prof.name, prof.avatar);
+      return redirect(res, '/?login=ok');
+    } catch (e) {
+      console.error(`Входът с ${provider} не мина:`, e.message);
+      return redirect(res, '/?login=error');
+    }
+  }
+  // Тестов вход: само локално без настроени Google/Discord, или с DEV_LOGIN=1
+  if (p === '/auth/dev' && req.method === 'POST') {
+    if (!devLoginAllowed(req)) throw new HttpError(404, 'Няма такъв адрес.');
+    const body = await readJson(req);
+    const name = clean(body.name, 30);
+    if (!name) throw new HttpError(400, 'Напиши име.');
+    const u = loginUser(res, req, 'dev', name.toLowerCase(), name, null);
+    return sendJson(res, 200, { user: userView(u) });
+  }
+  if (p === '/auth/logout' && req.method === 'POST') {
+    setCookie(res, req, 'dt_session', '', 0);
+    return sendJson(res, 200, { ok: true });
+  }
+  throw new HttpError(404, 'Няма такъв адрес.');
 }
 
 // ---------- YouTube ----------
@@ -669,22 +893,51 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Кой е влязъл и какви начини за вход има
+  if (m === 'GET' && p === '/api/session') {
+    return sendJson(res, 200, {
+      user: userView(currentUser(req)),
+      providers: ENABLED_PROVIDERS.map((k) => ({ id: k, label: PROVIDERS[k].label })),
+      devLogin: devLoginAllowed(req),
+    });
+  }
+  if (m === 'POST' && p === '/api/session/name') {
+    const u = requireUser(req);
+    limit(`rename:${u.id}`, 10, 3600e3, 'Смени името твърде много пъти. Опитай пак след малко.');
+    const body = await readJson(req);
+    const name = clean(body.name, 30);
+    if (name.length < 2) throw new HttpError(400, 'Името трябва да е поне 2 знака.');
+    u.name = name;
+    rememberFan(u.id, name);
+    save(); broadcast('state');
+    return sendJson(res, 200, { user: userView(u) });
+  }
+  // Прехвърляне на точките от браузъра (отпреди входа) към акаунта
+  if (m === 'POST' && p === '/api/session/claim') {
+    const u = requireUser(req);
+    const body = await readJson(req);
+    const r = claimBrowserData(clean(body.voterId, 64), u.id);
+    if (r.moved) { save(); broadcast('state'); broadcast('library'); }
+    return sendJson(res, 200, r);
+  }
+
   if (m === 'GET' && p === '/api/health') {
     return sendJson(res, 200, { ok: true, listeners: clients.size, uptime: Math.round(process.uptime()) });
   }
 
   if (m === 'GET' && p === '/api/state') {
-    const v = clean(url.searchParams.get('voterId'), 64);
+    const v = currentUser(req)?.id || null;
     return sendJson(res, 200, withViewer(v, () => publicState(v)));
   }
 
   if (m === 'GET' && p === '/api/songs') {
-    const v = clean(url.searchParams.get('voterId'), 64);
+    const v = currentUser(req)?.id || null;
     return sendJson(res, 200, withViewer(v, () => ({ songs: [...db.songs].reverse().map(songView) })));
   }
 
   // Търсене на песни в YouTube
   if (m === 'GET' && p === '/api/yt-search') {
+    requireUser(req);
     const q = clean(url.searchParams.get('q'), 100);
     if (q.length < 2) throw new HttpError(400, 'Напиши поне две букви.');
     if (!YOUTUBE_API_KEY) {
@@ -715,7 +968,7 @@ async function handleApi(req, res, url) {
     limitIp(req, 'trim', 30, 10 * 60e3);
     const body = await readJson(req);
     const song = songById(trimMatch[1]);
-    const voterId = clean(body.voterId, 64);
+    const voterId = requireUser(req).id;
     if (!song) throw new HttpError(404, 'Няма такава песен.');
     if (song.addedById && song.addedById !== voterId) throw new HttpError(403, 'Само този, който е добавил песента, може да променя началото и края ѝ.');
     // Връщане към автоматично откритото
@@ -746,7 +999,8 @@ async function handleApi(req, res, url) {
     const videoId = youtubeId(body.url);
     if (!videoId) throw new HttpError(400, 'Невалиден YouTube линк.');
     const existing = db.songs.find((s) => s.videoId === videoId);
-    const adderId = clean(body.voterId, 64) || null;
+    const me = requireUser(req);
+    const adderId = me.id;
     if (existing) return sendJson(res, 200, withViewer(adderId, () => ({ song: songView(existing), existing: true })));
     let title = clean(body.title, 120);
     let artist = clean(body.artist, 80);
@@ -761,7 +1015,7 @@ async function handleApi(req, res, url) {
     const song = {
       id: newId(), type: 'youtube', videoId,
       title: title || 'YouTube видео ' + videoId, artist: artist || 'Неизвестен изпълнител',
-      addedBy: clean(body.addedBy, 30) || 'Анонимен', addedById: adderId, createdAt: Date.now(),
+      addedBy: me.name, addedById: adderId, createdAt: Date.now(),
       duelWins: 0, defenses: 0, tipsTotal: 0, startAt: startAt || 0, endAt: null, skips: [],
       trimSource: startAt ? 'manual' : null,
     };
@@ -782,12 +1036,13 @@ async function handleApi(req, res, url) {
     if (!AUDIO_EXT.includes(ext)) throw new HttpError(400, 'Позволени формати: mp3, m4a, aac, wav, ogg, opus.');
     if (!title || !artist) throw new HttpError(400, 'Въведи име на песента и артист.');
     if (q.get('original') !== 'true') throw new HttpError(400, 'Потвърди, че песента е твоя оригинална музика.');
+    const me = requireUser(req);
     limitIp(req, 'upload', 6, 3600e3, 'Можеш да качиш до 6 песни на час.');
     const file = await receiveUpload(req, ext);
-    const adderId = clean(q.get('voterId'), 64) || null;
+    const adderId = me.id;
     const song = {
       id: newId(), type: 'audio', audioUrl: '/uploads/' + file.name,
-      title, artist, addedBy: clean(q.get('addedBy'), 30) || artist, addedById: adderId, createdAt: Date.now(),
+      title, artist, addedBy: me.name, addedById: adderId, createdAt: Date.now(),
       duelWins: 0, defenses: 0, tipsTotal: 0, startAt: 0, endAt: null,
     };
     db.songs.push(song);
@@ -798,11 +1053,13 @@ async function handleApi(req, res, url) {
 
   // Предизвикване на трона
   if (m === 'POST' && p === '/api/challenge') {
+    const me = requireUser(req);
     limitIp(req, 'challenge', 10, 10 * 60e3, 'Предизвика трона твърде много пъти за кратко време. Изчакай малко.');
+    limit(`challenge:${me.id}`, 10, 10 * 60e3, 'Предизвика трона твърде много пъти за кратко време. Изчакай малко.');
     const body = await readJson(req);
     const song = songById(body.songId);
     if (!song) throw new HttpError(404, 'Няма такава песен.');
-    const by = clean(body.by, 30) || 'Анонимен';
+    const by = me.name;
     if (!db.throne) {
       db.throne = { songId: song.id, since: Date.now() };
       save(); broadcast('state');
@@ -820,8 +1077,9 @@ async function handleApi(req, res, url) {
 
   // Гласуване (един глас на човек на дуел, може да се смени)
   if (m === 'POST' && p === '/api/vote') {
+    const me = requireUser(req);
     const body = await readJson(req);
-    const voterId = clean(body.voterId, 64);
+    const voterId = me.id;
     if (!db.duel) throw new HttpError(400, 'В момента няма дуел.');
     if (voterId.length < 8) throw new HttpError(400, 'Невалиден гласоподавател.');
     if (body.side !== 'champion' && body.side !== 'challenger') throw new HttpError(400, 'Невалиден избор.');
@@ -830,7 +1088,7 @@ async function handleApi(req, res, url) {
     limitIp(req, 'vote', 120, 60e3);
     const changed = db.duel.votes[voterId] !== body.side;
     db.duel.votes[voterId] = body.side;
-    rememberFan(voterId, body.name);
+    rememberFan(voterId, me.name);
     if (changed) { save(); broadcast('votes'); }
     return sendJson(res, 200, { ok: true, duelId: db.duel.id, side: body.side });
   }
@@ -841,12 +1099,13 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const song = songById(body.songId);
     const amount = Math.round(Number(body.amount));
-    const voterId = clean(body.voterId, 64);
+    const me = requireUser(req);
+    const voterId = me.id;
     if (!song) throw new HttpError(404, 'Няма такава песен.');
     if (song.type !== 'audio') throw new HttpError(400, 'Бакшиши има само за нови артисти с оригинална музика.');
     if (!Number.isFinite(amount) || amount < MIN_TIP || amount > MAX_TIP) throw new HttpError(400, `Сумата трябва да е между ${MIN_TIP} и ${MAX_TIP} €.`);
     if (voterId.length < 8) throw new HttpError(400, 'Невалиден потребител.');
-    rememberFan(voterId, body.by);
+    rememberFan(voterId, me.name);
     const before = biggestFanOf(song.artist);
     db.tips.push({
       id: newId(), songId: song.id, artist: song.artist, amount, voterId,
@@ -866,7 +1125,7 @@ async function handleApi(req, res, url) {
     const key = artistKey(url.searchParams.get('name'));
     const songs = db.songs.filter((s) => artistKey(s.artist) === key);
     if (!key || !songs.length) throw new HttpError(404, 'Няма такъв артист.');
-    const me = clean(url.searchParams.get('voterId'), 64);
+    const me = currentUser(req)?.id || '';
     const board = fanBoard(songs[0].artist);
     const top = biggestFanOf(songs[0].artist);
     const myIndex = board.findIndex((f) => f.voterId === me);
@@ -894,7 +1153,7 @@ async function handleApi(req, res, url) {
 
   // Моят профил: значки „Най-голям фен“ и подкрепени артисти
   if (m === 'GET' && p === '/api/me') {
-    const me = clean(url.searchParams.get('voterId'), 64);
+    const me = currentUser(req)?.id || '';
     const artists = {};
     for (const s of db.songs) artists[artistKey(s.artist)] = s.artist;
     const supported = [];
@@ -926,6 +1185,14 @@ const server = http.createServer(async (req, res) => {
   let url;
   try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); return res.end(); }
   try {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers.origin) {
+      // Защита от заявки от чужди сайтове: промени се приемат само от страниците на Dethrone
+      let originHost = '';
+      try { originHost = new URL(req.headers.origin).host; } catch { /* ignore */ }
+      const hosts = [req.headers.host, TRUST_PROXY ? req.headers['x-forwarded-host'] : null, PUBLIC_URL ? new URL(PUBLIC_URL).host : null];
+      if (!hosts.includes(originHost)) throw new HttpError(403, 'Заявката не идва от сайта.');
+    }
+    if (url.pathname.startsWith('/auth/')) return await handleAuth(req, res, url);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Методът не е позволен.');
     const rel = decodeURIComponent(url.pathname);
@@ -948,6 +1215,9 @@ server.listen(PORT, () => {
   console.log(`👑 Dethrone върви на http://localhost:${PORT}`);
   console.log(`   Дуел: ${DUEL_SECONDS} сек, пауза: ${BREAK_SECONDS} сек`);
   console.log(`   Данни: ${DATA_DIR}`);
+  console.log(ENABLED_PROVIDERS.length
+    ? `   Вход: ${ENABLED_PROVIDERS.map((k) => PROVIDERS[k].label).join(', ')}`
+    : '   Вход: няма настроен Google/Discord' + (DEV_LOGIN ? ' (тестов вход включен)' : ', тестов вход само от този компютър'));
   if (!STORAGE_DIR && (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID)) {
     console.warn('   ВНИМАНИЕ: няма закачен постоянен диск (volume). Базата и качените песни ще се изтрият при следващото качване на кода.');
   }
