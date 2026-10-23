@@ -2,187 +2,222 @@
 <html lang="bg">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Dethrone</title>
-  <meta name="description" content="Една песен, целият свят слуша. Предизвикай трона и нека слушателите решат.">
+  <meta name="description" content="Една песен за всички. Предизвикай трона и нека слушателите решат.">
+  <meta name="theme-color" content="#1C1F25">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;900&family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👑</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231C1F25'/><path d='M7 22l-1-11 6 4 4-7 4 7 6-4-1 11z' fill='%23E9AE3F'/></svg>">
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <span class="crown">👑</span>
-      <div>
-        <div class="logo">Dethrone</div>
-        <div class="tagline">една песен · целият свят слуша</div>
-      </div>
-    </div>
-    <div class="me-box">
-      <label class="nick">
-        <span>Твоето име</span>
-        <input id="nick" maxlength="30" placeholder="Анонимен" autocomplete="nickname">
+<div class="app">
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Dethrone">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 22l-1-11 6 4 4-7 4 7 6-4-1 11z"/><rect x="7" y="24" width="18" height="2.5" rx="1"/></svg>
+      <span class="brand-name">Dethrone</span>
+    </a>
+    <div class="topbar-actions">
+      <button id="add-btn" class="btn">
+        <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
+        <span>Добави песен</span>
+      </button>
+      <label class="nick" title="Името ти се показва в класациите">
+        <span class="sr-only">Твоето име</span>
+        <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7" r="3.5"/><path d="M3.5 17c1.2-3 3.6-4.5 6.5-4.5s5.3 1.5 6.5 4.5"/></svg>
+        <input id="nick" maxlength="30" placeholder="Твоето име" autocomplete="nickname">
       </label>
-      <button id="badges-btn" class="btn small badge-btn" title="Моите значки">🏅 <span id="badge-count">0</span></button>
+      <button id="badges-btn" class="btn icon-btn" title="Моите значки" aria-label="Моите значки">
+        <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="12" r="5"/><path d="M7 7.5L5 2h3l2 4 2-4h3l-2 5.5"/></svg>
+        <span id="badge-count" class="count">0</span>
+      </button>
     </div>
   </header>
 
-  <main>
-    <!-- ТРОНЪТ -->
-    <section class="stage">
-      <div class="stage-head">
-        <span class="eyebrow">Сега на трона</span>
-        <span class="reign">царува от <b id="reign-timer">—</b></span>
+  <!-- ЛЯВО: дуел и опашка -->
+  <aside class="col col-left" id="col-left">
+    <section class="panel" id="panel-duel">
+      <div class="panel-head">
+        <h2>Дуел за трона</h2>
+        <span id="duel-status" class="status"></span>
       </div>
-      <div class="stage-body">
-        <div class="player-wrap">
-          <div id="yt-holder" class="hidden"><div id="yt-player"></div></div>
-          <div id="cover" class="cover"><div class="cover-inner">👑</div></div>
-          <audio id="audio-player" preload="auto" loop></audio>
-        </div>
-        <div class="stage-info">
-          <div id="throne-info"></div>
-          <div class="controls">
-            <button id="listen-btn" class="btn primary big">▶ Слушай</button>
-            <div id="preview-banner" class="preview-banner hidden">
-              <span>Слушаш преглед на <b id="preview-title"></b></span>
-              <button id="back-btn" class="btn ghost small">↩ Върни се на трона</button>
-            </div>
-          </div>
-        </div>
+      <div id="duel"></div>
+      <div class="panel-head sub">
+        <h2>На опашка</h2>
+        <span id="queue-count" class="muted"></span>
       </div>
+      <div id="queue" class="rows"></div>
     </section>
+  </aside>
 
-    <!-- ДУЕЛ -->
-    <section id="duel" class="card"></section>
-
-    <div class="grid">
-      <section class="card">
-        <h2>⚔️ Чакат за дуел</h2>
-        <div id="queue" class="list"></div>
-      </section>
-      <section class="card">
-        <h2>🏆 Зала на славата</h2>
-        <p class="hint">Най-дългите царувания</p>
-        <ol id="hall" class="rank"></ol>
-      </section>
-      <section class="card">
-        <h2>🔎 Ловци на таланти</h2>
-        <p class="hint">Кой праща песни, които свалят трона</p>
-        <ol id="scouts" class="rank"></ol>
-      </section>
-      <section class="card">
-        <h2>📜 Последни дуели</h2>
-        <div id="recent" class="list"></div>
-      </section>
-      <section class="card">
-        <h2>💸 Последни бакшиши</h2>
-        <p class="hint">Подкрепа за новите артисти</p>
-        <div id="tips-feed" class="list"></div>
-      </section>
+  <!-- ЦЕНТЪР: сцената -->
+  <main class="stage">
+   <div class="stage-inner">
+    <div class="video-box">
+      <div class="video">
+        <div id="yt-holder" class="hidden"><div id="yt-player"></div></div>
+        <div id="cover" class="cover"><div class="cover-inner"></div></div>
+        <audio id="audio-player" preload="auto" loop></audio>
+      </div>
     </div>
 
-    <!-- БИБЛИОТЕКА -->
-    <section class="card">
-      <div class="lib-head">
-        <h2>🎶 Библиотека</h2>
+    <div class="now">
+      <div class="now-main" id="throne-info"></div>
+      <div class="reign">
+        <span class="reign-label">На трона от</span>
+        <span id="reign-timer" class="reign-time">0:00</span>
+      </div>
+    </div>
+
+    <div class="transport">
+      <button id="listen-btn" class="play" aria-label="Слушай">
+        <svg class="ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+        <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="4" height="14" rx="1"/><rect x="13.5" y="5" width="4" height="14" rx="1"/></svg>
+      </button>
+      <div class="transport-text">
+        <div id="now-line" class="now-line">Натисни, за да слушаш заедно с всички</div>
+        <div id="now-sub" class="now-sub"></div>
+      </div>
+      <button id="back-btn" class="btn small hidden">Върни се към трона</button>
+      <label class="volume" title="Сила на звука">
+        <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h3l4-3.5v11L6 12H3z"/><path d="M13 7.5a3.5 3.5 0 010 5M15 5a7 7 0 010 10"/></svg>
+        <input id="volume" type="range" min="0" max="100" value="80" aria-label="Сила на звука">
+      </label>
+    </div>
+   </div>
+  </main>
+
+  <!-- ДЯСНО: песни, класации, активност -->
+  <aside class="col col-right">
+    <nav class="tabs" role="tablist">
+      <button class="tab mobile-only" data-tab="duel" role="tab">Дуел</button>
+      <button class="tab active" data-tab="songs" role="tab">Песни</button>
+      <button class="tab" data-tab="ranks" role="tab">Класации</button>
+      <button class="tab" data-tab="activity" role="tab">Активност</button>
+    </nav>
+    <div class="tab-panels" id="tab-panels">
+      <section class="tab-panel active" data-panel="songs">
         <div class="lib-tools">
-          <div class="seg" role="tablist">
+          <div class="search">
+            <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><path d="M13 13l4 4"/></svg>
+            <input id="search" type="search" placeholder="Търси песен или артист">
+          </div>
+          <div class="seg">
             <button class="seg-btn active" data-filter="all">Всички</button>
             <button class="seg-btn" data-filter="original">Нови артисти</button>
             <button class="seg-btn" data-filter="youtube">YouTube</button>
           </div>
-          <input id="search" type="search" placeholder="Търси песен или артист…">
         </div>
-      </div>
-      <div id="library" class="library"></div>
-    </section>
-
-    <!-- ДОБАВЯНЕ -->
-    <div class="grid two">
-      <section class="card">
-        <h2>Добави песен от YouTube</h2>
-        <p class="hint">Постави линк. Името и изпълнителят се попълват сами, ако ги оставиш празни.</p>
-        <form id="yt-form" class="form">
-          <input name="url" required placeholder="https://www.youtube.com/watch?v=…">
-          <div class="row2">
-            <input name="title" maxlength="120" placeholder="Име на песента (по желание)">
-            <input name="artist" maxlength="80" placeholder="Изпълнител (по желание)">
-          </div>
-          <label class="check"><input type="checkbox" name="challenge" checked> И я прати веднага на дуел</label>
-          <button class="btn primary" type="submit">Добави</button>
-        </form>
+        <div id="library" class="rows"></div>
       </section>
-      <section class="card artist-card">
-        <h2>Качи своя оригинална песен</h2>
-        <p class="hint">За артисти. Получаваш бакшиши от слушателите и влизаш в класацията „Нови артисти“.</p>
-        <form id="upload-form" class="form">
-          <label class="file">
-            <input type="file" name="audio" accept=".mp3,.m4a,.aac,.wav,.ogg,.opus,audio/*" required>
-            <span class="file-label">🎵 Избери аудио файл</span>
-          </label>
-          <div class="row2">
-            <input name="title" required maxlength="120" placeholder="Име на песента">
-            <input name="artist" required maxlength="80" placeholder="Артист">
-          </div>
-          <label class="check"><input type="checkbox" name="original" required> Потвърждавам, че песента е моя оригинална музика</label>
-          <label class="check"><input type="checkbox" name="challenge" checked> И я прати веднага на дуел</label>
-          <button class="btn gold" type="submit">Качи</button>
-        </form>
+
+      <section class="tab-panel" data-panel="ranks">
+        <h3 class="block-title">Най-дълго на трона</h3>
+        <ol id="hall" class="rank"></ol>
+        <h3 class="block-title">Ловци на таланти</h3>
+        <p class="note">Хората, чиито предложения свалят трона най-често.</p>
+        <ol id="scouts" class="rank"></ol>
+      </section>
+
+      <section class="tab-panel" data-panel="activity">
+        <h3 class="block-title">Последни дуели</h3>
+        <div id="recent" class="rows"></div>
+        <h3 class="block-title">Бакшиши</h3>
+        <div id="tips-feed" class="rows"></div>
       </section>
     </div>
+  </aside>
+</div>
 
-    <footer class="foot">
-      Прототип · бакшишите са в тестов режим, не се теглят реални пари.<br>
-      🏅 <b>Най-голям фен</b>: 1 точка за всеки глас за артиста, 3 точки за всяко евро бакшиш.
-    </footer>
-  </main>
-
-  <!-- БАКШИШ -->
-  <dialog id="tip-dialog">
-    <form id="tip-form" class="modal-box">
-      <button type="button" class="close-x" data-close aria-label="Затвори">✕</button>
-      <h3>💸 Бакшиш за <span id="tip-artist"></span></h3>
-      <p class="hint" id="tip-song"></p>
-      <div class="amounts" role="radiogroup" aria-label="Сума">
-        <button type="button" class="amount" data-amount="1">1 €</button>
-        <button type="button" class="amount active" data-amount="2">2 €</button>
-        <button type="button" class="amount" data-amount="5">5 €</button>
-        <button type="button" class="amount" data-amount="10">10 €</button>
+<!-- ДОБАВЯНЕ НА ПЕСЕН -->
+<dialog id="add-dialog">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Добави песен</h3>
+      <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+    </div>
+    <div class="seg full">
+      <button class="seg-btn active" data-addtab="yt">От YouTube</button>
+      <button class="seg-btn" data-addtab="upload">Моя песен</button>
+    </div>
+    <form id="yt-form" class="form" data-addpanel="yt">
+      <label class="field"><span>Линк към видеото</span><input name="url" required placeholder="https://www.youtube.com/watch?v=…"></label>
+      <div class="row2">
+        <label class="field"><span>Име на песента</span><input name="title" maxlength="120" placeholder="Попълва се само"></label>
+        <label class="field"><span>Изпълнител</span><input name="artist" maxlength="80" placeholder="Попълва се само"></label>
       </div>
-      <label class="field">
-        <span>Или друга сума (1–50 €)</span>
-        <input id="tip-custom" type="number" min="1" max="50" step="1" inputmode="numeric" placeholder="напр. 3">
-      </label>
-      <label class="field">
-        <span>Съобщение до артиста (по желание)</span>
-        <textarea id="tip-message" maxlength="140" rows="2" placeholder="Страхотна песен! 🔥"></textarea>
-      </label>
-      <p class="fan-note" id="tip-fan-note"></p>
-      <button type="submit" class="btn gold big" id="tip-submit">Изпрати 2 €</button>
-      <p class="hint center">Тестов режим: не се теглят реални пари.</p>
+      <label class="check"><input type="checkbox" name="challenge" checked> Предизвикай трона веднага</label>
+      <button class="btn primary wide" type="submit">Добави песента</button>
     </form>
-  </dialog>
+    <form id="upload-form" class="form hidden" data-addpanel="upload">
+      <p class="note">За артисти с оригинална музика. Слушателите могат да ти пращат бакшиши.</p>
+      <label class="file">
+        <input type="file" name="audio" accept=".mp3,.m4a,.aac,.wav,.ogg,.opus,audio/*" required>
+        <span class="file-label">Избери аудио файл (mp3, m4a, wav, ogg)</span>
+      </label>
+      <div class="row2">
+        <label class="field"><span>Име на песента</span><input name="title" required maxlength="120"></label>
+        <label class="field"><span>Артист</span><input name="artist" required maxlength="80"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="original" required> Песента е моя оригинална музика</label>
+      <label class="check"><input type="checkbox" name="challenge" checked> Предизвикай трона веднага</label>
+      <button class="btn primary wide" type="submit">Качи песента</button>
+    </form>
+  </div>
+</dialog>
 
-  <!-- АРТИСТ -->
-  <dialog id="artist-dialog">
-    <div class="modal-box wide">
-      <button type="button" class="close-x" data-close aria-label="Затвори">✕</button>
-      <div id="artist-body"></div>
+<!-- БАКШИШ -->
+<dialog id="tip-dialog">
+  <form id="tip-form" class="modal">
+    <div class="modal-head">
+      <div>
+        <h3>Бакшиш за <span id="tip-artist"></span></h3>
+        <p class="note" id="tip-song"></p>
+      </div>
+      <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
     </div>
-  </dialog>
-
-  <!-- МОИТЕ ЗНАЧКИ -->
-  <dialog id="badges-dialog">
-    <div class="modal-box">
-      <button type="button" class="close-x" data-close aria-label="Затвори">✕</button>
-      <div id="badges-body"></div>
+    <div class="amounts" role="radiogroup" aria-label="Сума">
+      <button type="button" class="amount" data-amount="1">1 €</button>
+      <button type="button" class="amount active" data-amount="2">2 €</button>
+      <button type="button" class="amount" data-amount="5">5 €</button>
+      <button type="button" class="amount" data-amount="10">10 €</button>
     </div>
-  </dialog>
+    <label class="field"><span>Друга сума, от 1 до 50 €</span>
+      <input id="tip-custom" type="number" min="1" max="50" step="1" inputmode="numeric" placeholder="3"></label>
+    <label class="field"><span>Съобщение до артиста</span>
+      <textarea id="tip-message" maxlength="140" rows="2" placeholder="По желание"></textarea></label>
+    <p class="callout" id="tip-fan-note"></p>
+    <button type="submit" class="btn primary wide" id="tip-submit">Изпрати 2 €</button>
+    <p class="note center">Тестов режим. Не се теглят реални пари.</p>
+  </form>
+</dialog>
 
-  <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/app.js"></script>
+<!-- АРТИСТ -->
+<dialog id="artist-dialog" class="wide">
+  <div class="modal">
+    <div class="modal-head">
+      <div id="artist-head"></div>
+      <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+    </div>
+    <div id="artist-body" class="modal-scroll"></div>
+  </div>
+</dialog>
+
+<!-- МОИТЕ ЗНАЧКИ -->
+<dialog id="badges-dialog">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Моите значки</h3>
+      <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+    </div>
+    <div id="badges-body" class="modal-scroll"></div>
+  </div>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
 </body>
 </html>

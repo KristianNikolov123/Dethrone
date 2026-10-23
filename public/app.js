@@ -1,10 +1,21 @@
 (() => {
   'use strict';
   const $ = (s) => document.querySelector(s);
+  const $$ = (s) => document.querySelectorAll(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
+  const ANON = 'Анонимен';
+
+  // ---------- Икони ----------
+  const ICON = {
+    play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg>',
+    note: '<svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
+    crown: '<svg viewBox="0 0 24 24"><path d="M4 17l-1-9 5 3.5L12 5l4 6.5L21 8l-1 9z"/></svg>',
+    medal: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="12" r="5"/><path d="M7 7.5L5 2h3l2 4 2-4h3l-2 5.5"/></svg>',
+    coin: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M12.5 7.5a3 3 0 100 5M6.5 9.2h4M6.5 11h4"/></svg>',
+  };
 
   // ---------- Потребител ----------
   let voterId = lsGet('bc_voter');
@@ -12,7 +23,7 @@
   const nickInput = $('#nick');
   nickInput.value = lsGet('bc_nick') || '';
   nickInput.addEventListener('input', () => lsSet('bc_nick', nickInput.value.trim()));
-  const nick = () => nickInput.value.trim() || 'Анонимен';
+  const nick = () => nickInput.value.trim() || ANON;
 
   // ---------- Състояние ----------
   let state = null;
@@ -21,8 +32,7 @@
   let libFilter = 'all';
   const songIndex = new Map();
   const serverNow = () => Date.now() + skew;
-
-  function indexSongs(list) { for (const s of list) if (s) songIndex.set(s.id, s); }
+  const indexSongs = (list) => { for (const s of list) if (s) songIndex.set(s.id, s); };
 
   function fmt(ms) {
     let s = Math.max(0, Math.floor(ms / 1000));
@@ -30,10 +40,12 @@
     const h = Math.floor(s / 3600); s %= 3600;
     const m = Math.floor(s / 60); s %= 60;
     const p = (n) => String(n).padStart(2, '0');
-    if (d) return `${d}д ${h}ч ${p(m)}м`;
+    if (d) return `${d} д ${h} ч`;
     if (h) return `${h}:${p(m)}:${p(s)}`;
     return `${m}:${p(s)}`;
   }
+  const eur = (n) => `${n} €`;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
   function toast(msg, bad) {
     const t = $('#toast');
@@ -47,16 +59,16 @@
     const r = await fetch(path, opts);
     let j = {};
     try { j = await r.json(); } catch { /* ignore */ }
-    if (!r.ok) throw new Error(j.error || 'Нещо се обърка.');
+    if (!r.ok) throw new Error(j.error || 'Заявката не мина. Опитай пак.');
     return j;
   }
   const post = (p, body) => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
   const ytThumb = (id, q = 'mqdefault') => `https://i.ytimg.com/vi/${encodeURIComponent(id)}/${q}.jpg`;
-  const thumb = (s) => s.type === 'youtube'
-    ? `<img class="thumb" src="${ytThumb(s.videoId)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=&quot;thumb&quot;>▶</div>'">`
-    : '<div class="thumb orig">🎵</div>';
-  const tag = (s) => (s.original ? '<span class="tag gold">Нов артист</span>' : '<span class="tag">YouTube</span>');
+  const thumb = (s) => (s.type === 'youtube'
+    ? `<img class="thumb" src="${ytThumb(s.videoId)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb'}))">`
+    : `<div class="thumb">${ICON.note}</div>`);
+  const artistLink = (name) => `<button class="link" data-artist="${esc(name)}">${esc(name)}</button>`;
 
   // ---------- Данни ----------
   async function refresh() {
@@ -67,7 +79,6 @@
       indexSongs([s.throne?.song, s.duel?.champion, s.duel?.challenger, ...s.queue.map((q) => q.song)]);
       render();
       syncPlayer();
-      // След всеки завършил дуел гласовете носят точки, затова обнови значките
       const lastDuelAt = s.recentDuels[0]?.at || 0;
       if (lastDuelAt !== refresh.lastDuelAt) { refresh.lastDuelAt = lastDuelAt; loadBadges(); }
     } catch (e) { console.error(e); }
@@ -84,7 +95,7 @@
   es.addEventListener('state', refresh);
   es.addEventListener('library', loadLibrary);
   es.addEventListener('open', () => { refresh(); loadLibrary(); });
-  setInterval(refresh, 15000); // резервно, ако връзката прекъсне
+  setInterval(refresh, 15000);
 
   // ---------- Рендериране ----------
   function render() {
@@ -99,93 +110,97 @@
     updateTimers();
   }
 
-  const artistLink = (name) => `<button class="link" data-artist="${esc(name)}">${esc(name)}</button>`;
-  const fanPill = (s) => (s.biggestFan ? `<span class="fan-pill" title="Най-голям фен на ${esc(s.artist)}">🏅 Най-голям фен: ${esc(s.biggestFan)}</span>` : '');
-  const eur = (n) => `${n} €`;
-
-  function renderTips() {
-    const el = $('#tips-feed');
-    const tips = state.recentTips || [];
-    if (!tips.length) { el.innerHTML = '<p class="empty">Още няма бакшиши. Подкрепи нов артист с 💸.</p>'; return; }
-    el.innerHTML = tips.map((t) => `<div class="item tip-item">
-      <span class="amt">${eur(t.amount)}</span>
-      <div class="grow">
-        <div class="t">${esc(t.by)}${t.byBiggestFan ? ' 🏅' : ''} → ${artistLink(t.artist)}</div>
-        <div class="s">за „${esc(t.songTitle)}“</div>
-        ${t.message ? `<div class="tip-msg">„${esc(t.message)}“</div>` : ''}
-      </div>
-    </div>`).join('');
-  }
-
   function renderThrone() {
     const el = $('#throne-info');
     const t = state.throne;
     if (!t || !t.song) {
-      el.innerHTML = `<div class="tags"><span class="tag">Свободно</span></div>
-        <h1 class="song-title">Тронът е празен</h1>
-        <p class="meta">Добави песен отдолу и я прати на дуел. Първата сяда направо на трона.</p>`;
-      $('#reign-timer').textContent = '—';
+      el.innerHTML = `<h1 class="song-title">Тронът е свободен</h1>
+        <p class="song-artist">Добави песен и тя сяда направо на трона.</p>`;
+      $('#reign-timer').textContent = '0:00';
       return;
     }
     const s = t.song;
-    el.innerHTML = `<div class="tags">${tag(s)}${state.duel ? '<span class="tag live">В дуел</span>' : ''}</div>
-      <h1 class="song-title">${esc(s.title)}</h1>
-      <p class="artist">${artistLink(s.artist)}</p>
-      <p class="meta">Пратена от ${esc(s.addedBy)} · ${s.duelWins} ${s.duelWins === 1 ? 'победа' : 'победи'} · ${s.defenses} ${s.defenses === 1 ? 'защита' : 'защити'}${s.original ? ` · ${eur(s.tipsTotal)} бакшиши` : ''}</p>
-      ${fanPill(s)}
-      ${s.original ? `<div class="row" style="margin-top:10px"><button class="btn gold small" data-tip="${s.id}">💸 Бакшиш</button></div>` : ''}`;
+    const chips = [
+      s.original ? '<span class="chip gold">Нов артист</span>' : '<span class="chip">YouTube</span>',
+      state.duel ? '<span class="chip live"><span class="dot"></span>Защитава трона</span>' : '',
+    ].join('');
+    const meta = [
+      `<span>Предложена от ${esc(s.addedBy)}</span>`,
+      `<span>${plural(s.duelWins, 'победа', 'победи')}, ${plural(s.defenses, 'защита', 'защити')}</span>`,
+      s.original ? `<span>${eur(s.tipsTotal)} бакшиши</span>` : '',
+      s.biggestFan ? `<span class="fan">${ICON.medal}Най-голям фен: ${esc(s.biggestFan)}</span>` : '',
+      s.original ? `<button class="btn small" data-tip="${s.id}">${ICON.coin.replace('<svg', '<svg class="ic"')}Бакшиш</button>` : '',
+    ].join('');
+    el.innerHTML = `<div class="chips">${chips}</div>
+      <h1 class="song-title" title="${esc(s.title)}">${esc(s.title)}</h1>
+      <p class="song-artist">${artistLink(s.artist)}</p>
+      <div class="song-meta">${meta}</div>`;
   }
 
   function renderDuel() {
     const el = $('#duel');
+    const status = $('#duel-status');
     const d = state.duel;
     if (!d) {
-      el.className = 'card slim';
+      status.className = 'status';
+      status.textContent = '';
       if (state.queue.length && state.throne) {
-        el.innerHTML = `<div class="between">⚔️ Следващ дуел започва след <b data-countdown="${state.nextDuelAt}">…</b></div>`;
+        el.innerHTML = `<div class="idle"><strong>Следващият дуел започва след</strong>
+          <span class="clock" data-countdown="${state.nextDuelAt}">0:00</span>
+          Претендент: ${esc(state.queue[0].song.title)}</div>`;
       } else if (state.throne) {
-        el.innerHTML = '<div class="between muted">Няма активен дуел. Избери песен от библиотеката и предизвикай трона!</div>';
+        el.innerHTML = `<div class="idle"><strong>Няма дуел в момента</strong>
+          Предизвикай трона с песен от списъка или добави нова.
+          <button class="btn small" data-open-add>Добави песен</button></div>`;
       } else {
-        el.innerHTML = '<div class="between muted">Дуелите започват, щом има песен на трона.</div>';
+        el.innerHTML = `<div class="idle"><strong>Още няма песен на трона</strong>
+          Първата добавена песен го заема. След това започват дуелите.
+          <button class="btn small" data-open-add>Добави песен</button></div>`;
       }
       return;
     }
+    status.className = 'status live';
+    status.innerHTML = '<span class="dot"></span>На живо';
     const total = d.counts.champion + d.counts.challenger;
     const pct = (k) => (total ? Math.round((d.counts[k] * 100) / total) : 50);
-    const leader = d.counts.challenger > d.counts.champion ? 'challenger' : (d.counts.champion > d.counts.challenger ? 'champion' : null);
-    const side = (k, label) => {
+    const side = (k, role) => {
       const s = d[k];
-      if (!s) return '<div class="duel-side"><p class="empty">Песента е премахната.</p></div>';
+      if (!s) return '<div class="contender"><p class="empty">Песента е премахната.</p></div>';
       const mine = d.myVote === k;
-      return `<div class="duel-side ${mine ? 'voted' : ''} ${leader === k ? 'leading' : ''}">
-        <div class="duel-label">${label}</div>
+      return `<div class="contender ${mine ? 'voted' : ''}">
         ${thumb(s)}
-        <h3>${esc(s.title)}</h3>
-        <p class="artist">${artistLink(s.artist)}</p>
-        ${fanPill(s)}
-        <div class="bar"><span style="width:${pct(k)}%"></span></div>
-        <p class="votes"><b>${d.counts[k]}</b> ${d.counts[k] === 1 ? 'глас' : 'гласа'} · ${total ? pct(k) + '%' : '—'}</p>
-        <div class="row">
-          <button class="btn small" data-preview="${s.id}">▶ Чуй</button>
-          <button class="btn small ${mine ? 'primary' : 'outline'}" data-vote="${k}">${mine ? '✓ Твоят глас' : 'Гласувай'}</button>
+        <div style="min-width:0">
+          <div class="role">${role}</div>
+          <div class="name" title="${esc(s.title)}">${esc(s.title)}</div>
+          <div class="by">${artistLink(s.artist)}</div>
+        </div>
+        <div class="votes">${d.counts[k]}<small>${d.counts[k] === 1 ? 'глас' : 'гласа'}</small></div>
+        ${k === 'challenger' ? `<div class="fan-line plain">Предложен от ${esc(d.challengedBy)}</div>` : ''}
+        ${s.biggestFan ? `<div class="fan-line">Най-голям фен: ${esc(s.biggestFan)}</div>` : ''}
+        <div class="actions">
+          <button class="btn small" data-preview="${s.id}">Чуй</button>
+          <button class="btn small ${mine ? 'mine' : ''}" data-vote="${k}">${mine ? 'Твоят глас' : 'Гласувай'}</button>
         </div>
       </div>`;
     };
-    el.className = 'card duel';
-    el.innerHTML = `<div class="duel-head">
-        <h2><span class="tag live">На живо</span> Дуел за трона</h2>
-        <span class="timer big" data-countdown="${d.endsAt}">…</span>
-      </div>
-      <p class="hint" style="margin:6px 0 0">Предизвикателят е пратен от <b>${esc(d.challengedBy)}</b>. Чуй и двете и гласувай. При равенство шампионът остава.</p>
-      <div class="duel-grid">${side('champion', '👑 Шампион')}<div class="vs">VS</div>${side('challenger', '⚔️ Предизвикател')}</div>`;
+    el.innerHTML = `
+      <div class="duel-clock" data-countdown="${d.endsAt}">0:00</div>
+      <div class="duel-clock-label">до края на гласуването</div>
+      ${side('champion', 'На трона')}
+      <div class="split"><span class="a" style="width:${pct('champion')}%"></span><span class="b" style="width:${100 - pct('champion')}%"></span></div>
+      <div class="split-legend"><span>${total ? pct('champion') + '%' : '—'}</span><span>${total ? (100 - pct('champion')) + '%' : '—'}</span></div>
+      ${side('challenger', 'Претендент')}
+      <p class="duel-rule">При равен резултат песента на трона остава.</p>`;
   }
 
   function renderQueue() {
     const el = $('#queue');
-    if (!state.queue.length) { el.innerHTML = '<p class="empty">Никой не чака. Ти ли ще си първият?</p>'; return; }
-    el.innerHTML = state.queue.map((q, i) => `<div class="item">
-      <span class="dur">${i + 1}.</span>${thumb(q.song)}
-      <div class="grow"><div class="t">${esc(q.song.title)}</div><div class="s">${esc(q.song.artist)} · от ${esc(q.challengedBy)}</div></div>
+    $('#queue-count').textContent = state.queue.length ? String(state.queue.length) : '';
+    if (!state.queue.length) { el.innerHTML = '<p class="empty">Никой не чака за дуел.</p>'; return; }
+    el.innerHTML = state.queue.map((q) => `<div class="row">
+      ${thumb(q.song)}
+      <div style="min-width:0"><div class="t">${esc(q.song.title)}</div><div class="s">от ${esc(q.challengedBy)}</div></div>
+      <span></span>
     </div>`).join('');
   }
 
@@ -193,32 +208,42 @@
     const el = $('#hall');
     if (!state.hallOfFame.length) { el.innerHTML = '<li class="empty">Още няма царувания.</li>'; return; }
     el.innerHTML = state.hallOfFame.map((r) => `<li>
-      <div class="grow" style="flex:1;min-width:0"><div class="item"><div class="grow">
-        <div class="t">${esc(r.song.title)} ${r.current ? '<span class="tag gold">сега</span>' : ''}</div>
-        <div class="s">${esc(r.song.artist)}</div></div></div></div>
-      <span class="dur" ${r.current ? `data-since="${r.start}"` : ''}>${fmt(r.duration)}</span>
+      <div style="min-width:0"><div class="t">${esc(r.song.title)}</div>
+        <div class="s">${artistLink(r.song.artist)}${r.current ? ' <span class="tag-text gold">на трона</span>' : ''}</div></div>
+      <span class="num strong" ${r.current ? `data-since="${r.start}"` : ''}>${fmt(r.duration)}</span>
     </li>`).join('');
   }
 
   function renderScouts() {
     const el = $('#scouts');
-    if (!state.scouts.length) { el.innerHTML = '<li class="empty">Свали трона с песен, която си пратил, и влизаш тук.</li>'; return; }
-    el.innerHTML = state.scouts.map((s) => `<li><div class="grow" style="flex:1;min-width:0"><div class="t">${esc(s.name)}</div></div>
-      <span class="dur">${s.wins} ${s.wins === 1 ? 'сваляне' : 'сваляния'}</span></li>`).join('');
+    if (!state.scouts.length) { el.innerHTML = '<li class="empty">Предложи песен, която свали трона, и името ти ще е тук.</li>'; return; }
+    el.innerHTML = state.scouts.map((s) => `<li><div class="t">${esc(s.name)}</div>
+      <span class="num">${plural(s.wins, 'сваляне', 'сваляния')}</span></li>`).join('');
   }
 
   function renderRecent() {
     const el = $('#recent');
     if (!state.recentDuels.length) { el.innerHTML = '<p class="empty">Още няма завършени дуели.</p>'; return; }
     el.innerHTML = state.recentDuels.map((d) => {
-      const champ = d.champion?.title ?? '—';
-      const chall = d.challenger?.title ?? '—';
-      const won = d.winner === 'challenger';
-      return `<div class="item"><div class="grow">
-        <div class="t">${won ? `<span class="win">${esc(chall)}</span> свали <span class="lose">${esc(champ)}</span>` : `<span class="win">${esc(champ)}</span> удържа срещу <span class="lose">${esc(chall)}</span>`}</div>
-        <div class="s">${d.counts.champion} : ${d.counts.challenger} гласа${d.challengedBy ? ' · предизвикал ' + esc(d.challengedBy) : ''}</div>
-      </div></div>`;
+      const champ = esc(d.champion?.title ?? '—');
+      const chall = esc(d.challenger?.title ?? '—');
+      const line = d.winner === 'challenger'
+        ? `<span class="won">${chall}</span> свали ${champ}`
+        : `<span class="won">${champ}</span> удържа срещу ${chall}`;
+      return `<div class="feed-item"><div class="line">${line}</div>
+        <div class="s">${d.counts.champion} на ${d.counts.challenger} гласа${d.challengedBy ? `, предложено от ${esc(d.challengedBy)}` : ''}</div></div>`;
     }).join('');
+  }
+
+  function renderTips() {
+    const el = $('#tips-feed');
+    const tips = state.recentTips || [];
+    if (!tips.length) { el.innerHTML = '<p class="empty">Още няма бакшиши. Новите артисти ги получават директно.</p>'; return; }
+    el.innerHTML = tips.map((t) => `<div class="feed-item">
+      <div class="line"><span class="amt">${eur(t.amount)}</span> от ${esc(t.by)}${t.byBiggestFan ? ' <span class="tag-text gold">най-голям фен</span>' : ''} за ${artistLink(t.artist)}</div>
+      <div class="s">${esc(t.songTitle)}</div>
+      ${t.message ? `<div class="msg">${esc(t.message)}</div>` : ''}
+    </div>`).join('');
   }
 
   function renderLibrary() {
@@ -229,25 +254,26 @@
     const list = library.filter((s) =>
       (libFilter === 'all' || (libFilter === 'original' ? s.original : !s.original)) &&
       (!q || s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)));
-    if (!library.length) { el.innerHTML = '<p class="empty">Библиотеката е празна. Добави първата песен отдолу.</p>'; return; }
-    if (!list.length) { el.innerHTML = '<p class="empty">Нищо не съвпада.</p>'; return; }
+    if (!library.length) {
+      el.innerHTML = '<div class="idle" style="margin-top:6px"><strong>Списъкът е празен</strong>Добави първата песен.<button class="btn small" data-open-add>Добави песен</button></div>';
+      return;
+    }
+    if (!list.length) { el.innerHTML = '<p class="empty">Няма песни, които да съвпадат.</p>'; return; }
     el.innerHTML = list.map((s) => {
       const onThrone = s.id === throneId;
-      let challengeBtn;
-      if (onThrone) challengeBtn = '<span class="tag gold">👑 На трона</span>';
-      else if (busy.has(s.id)) challengeBtn = '<span class="tag">Чака дуел</span>';
-      else challengeBtn = `<button class="btn small primary" data-challenge="${s.id}">${throneId ? '⚔️ На дуел' : '👑 На трона'}</button>`;
-      return `<div class="lib-item ${onThrone ? 'on-throne' : ''}">
+      const waiting = busy.has(s.id);
+      const action = onThrone || waiting ? ''
+        : `<button class="btn small" data-challenge="${s.id}">${throneId ? 'Предизвикай' : 'На трона'}</button>`;
+      const status = onThrone ? '<span class="tag-text gold">на трона</span>' : waiting ? '<span class="tag-text">чака дуел</span>' : '';
+      const sub = [artistLink(s.artist), status, s.duelWins ? plural(s.duelWins, 'победа', 'победи') : '']
+        .filter(Boolean).join(', ');
+      return `<div class="row ${onThrone ? 'on-throne' : ''}">
         ${thumb(s)}
-        <div class="grow" style="flex:1;min-width:0">
-          <div class="item"><div class="grow"><div class="t">${esc(s.title)}</div>
-          <div class="s">${artistLink(s.artist)} · ${s.duelWins} победи${s.original ? ` · ${eur(s.tipsTotal)}` : ''}</div></div></div>
-          <div class="actions">
-            ${tag(s)}
-            <button class="btn small" data-preview="${s.id}">▶ Чуй</button>
-            ${challengeBtn}
-            ${s.original ? `<button class="btn small gold" data-tip="${s.id}">💸</button>` : ''}
-          </div>
+        <div style="min-width:0"><div class="t" title="${esc(s.title)}">${esc(s.title)}</div><div class="s">${sub}</div></div>
+        <div class="end">
+          <button class="ibtn" data-preview="${s.id}" title="Чуй" aria-label="Чуй ${esc(s.title)}">${ICON.play}</button>
+          ${s.original ? `<button class="ibtn stroke" data-tip="${s.id}" title="Бакшиш" aria-label="Бакшиш">${ICON.coin}</button>` : ''}
+          ${action}
         </div>
       </div>`;
     }).join('');
@@ -257,19 +283,56 @@
     if (!state) return;
     const now = serverNow();
     if (state.throne) $('#reign-timer').textContent = fmt(now - state.throne.since);
-    document.querySelectorAll('[data-countdown]').forEach((el) => {
+    $$('[data-countdown]').forEach((el) => {
       const left = Number(el.dataset.countdown) - now;
       el.textContent = left > 0 ? fmt(left + 999) : '0:00';
     });
-    document.querySelectorAll('[data-since]').forEach((el) => { el.textContent = fmt(now - Number(el.dataset.since)); });
+    $$('[data-since]').forEach((el) => { el.textContent = fmt(now - Number(el.dataset.since)); });
   }
   setInterval(updateTimers, 500);
+
+  // ---------- Табове ----------
+  function showTab(name) {
+    $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    $$('.tab-panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === name));
+  }
+  $$('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
+
+  // На телефон дуелът се мести в табовете отдолу
+  const duelPanel = $('#panel-duel');
+  const mobileDuel = document.createElement('section');
+  mobileDuel.className = 'tab-panel';
+  mobileDuel.dataset.panel = 'duel';
+  $('#tab-panels').prepend(mobileDuel);
+  const mq = window.matchMedia('(max-width: 1023px)');
+  function placeDuel() {
+    if (mq.matches) {
+      mobileDuel.appendChild(duelPanel);
+      if (!$('.tab.active') || $('.tab.active').dataset.tab === 'songs') showTab(state?.duel ? 'duel' : 'songs');
+    } else {
+      $('#col-left').appendChild(duelPanel);
+      if ($('.tab.active')?.dataset.tab === 'duel') showTab('songs');
+    }
+  }
+  mq.addEventListener('change', placeDuel);
+  placeDuel();
 
   // ---------- Плейър ----------
   const audio = $('#audio-player');
   const cover = $('#cover');
   const listenBtn = $('#listen-btn');
-  const player = { listening: false, mode: 'throne', previewSong: null, key: null, current: null, yt: null, needsSync: false, syncSince: null };
+  const volume = $('#volume');
+  const player = { listening: false, mode: 'throne', previewSong: null, key: null, yt: null, needsSync: false, syncSince: null };
+
+  volume.value = lsGet('bc_volume') || '80';
+  function applyVolume() {
+    const v = Number(volume.value);
+    audio.volume = v / 100;
+    try { if (player.yt && player.yt.setVolume) player.yt.setVolume(v); } catch { /* ignore */ }
+    lsSet('bc_volume', String(v));
+  }
+  volume.addEventListener('input', applyVolume);
+  applyVolume();
 
   function desired() {
     if (player.mode === 'preview' && player.previewSong) return { song: player.previewSong, since: null };
@@ -286,8 +349,8 @@
       cover.style.backgroundImage = '';
       cover.classList.remove('has-img');
       inner.innerHTML = song
-        ? `<span class="big-emoji">🎵</span>${esc(song.title)}`
-        : '<span class="big-emoji">👑</span>Тронът чака';
+        ? (playing ? '<div class="eq"><i></i><i></i><i></i><i></i></div>' : ICON.note) + `<span>${esc(song.title)}</span>`
+        : `${ICON.crown}<span>Тронът е свободен</span>`;
     }
     cover.classList.toggle('playing', !!playing);
   }
@@ -300,9 +363,25 @@
   const offsetFor = (since, duration) =>
     since == null || !duration || !isFinite(duration) ? 0 : ((serverNow() - since) / 1000) % duration;
 
+  function updateTransport() {
+    const want = desired();
+    const line = $('#now-line');
+    const sub = $('#now-sub');
+    const preview = player.mode === 'preview' && player.previewSong && player.listening;
+    listenBtn.classList.toggle('on', player.listening);
+    listenBtn.setAttribute('aria-label', player.listening ? 'Спри' : 'Слушай');
+    $('#back-btn').classList.toggle('hidden', !preview);
+    sub.classList.toggle('preview', !!preview);
+    if (!want) { line.textContent = 'Тронът е свободен'; sub.innerHTML = 'Добави песен, за да започне.'; return; }
+    line.textContent = `${want.song.title}, ${want.song.artist}`;
+    if (preview) sub.innerHTML = '<span class="dot"></span>Преглед. Само ти чуваш тази песен.';
+    else if (player.listening) sub.innerHTML = '<span class="dot"></span>Слушаш на живо заедно с всички';
+    else sub.innerHTML = 'Натисни, за да слушаш заедно с всички';
+  }
+
   function syncPlayer() {
     const want = desired();
-    updatePreviewBanner();
+    updateTransport();
     if (!player.listening) { setCover(want?.song, false); showYt(false); return; }
     if (!want) { stopAll(); setCover(null, false); showYt(false); return; }
     const key = want.song.id + '|' + (want.since ?? 'preview');
@@ -312,7 +391,6 @@
   }
 
   function play(song, since) {
-    player.current = song;
     if (song.type === 'youtube') {
       audio.pause();
       showYt(true);
@@ -325,7 +403,7 @@
       setCover(song, true);
       audio.onloadedmetadata = () => {
         if (since != null) { try { audio.currentTime = offsetFor(since, audio.duration); } catch { /* ignore */ } }
-        audio.play().catch(() => toast('Натисни „Слушай“ още веднъж, за да пусне звука.', true));
+        audio.play().catch(() => toast('Браузърът спря звука. Натисни бутона за пускане още веднъж.', true));
       };
       audio.src = song.audioUrl;
       audio.load();
@@ -340,7 +418,7 @@
     window.onYouTubeIframeAPIReady = () => { ensureYtApi.queue.forEach((f) => f()); ensureYtApi.queue = []; };
     const s = document.createElement('script');
     s.src = 'https://www.youtube.com/iframe_api';
-    s.onerror = () => toast('YouTube не се зарежда. Провери интернет връзката.', true);
+    s.onerror = () => toast('YouTube не се зарежда. Провери връзката с интернет.', true);
     document.head.appendChild(s);
   }
 
@@ -352,9 +430,9 @@
           videoId,
           playerVars: { autoplay: 1, playsinline: 1, rel: 0 },
           events: {
-            onReady: (e) => e.target.playVideo(),
+            onReady: (e) => { applyVolume(); e.target.playVideo(); },
             onStateChange: onYtState,
-            onError: () => toast('Това видео не позволява вграждане извън YouTube. Пробвай друга песен.', true),
+            onError: () => toast('Авторът на това видео е забранил вграждането. Избери друга песен.', true),
           },
         });
       } else {
@@ -385,8 +463,6 @@
 
   function setListening(on) {
     player.listening = on;
-    listenBtn.textContent = on ? '⏸ Спри' : '▶ Слушай';
-    listenBtn.classList.toggle('primary', !on);
     if (!on) { stopAll(); player.mode = 'throne'; player.previewSong = null; }
     player.key = null;
     syncPlayer();
@@ -395,10 +471,9 @@
   function preview(song) {
     player.mode = 'preview';
     player.previewSong = song;
-    if (!player.listening) { player.listening = true; listenBtn.textContent = '⏸ Спри'; listenBtn.classList.remove('primary'); }
+    player.listening = true;
     player.key = null;
     syncPlayer();
-    $('.stage').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function backToThrone() {
@@ -408,25 +483,18 @@
     syncPlayer();
   }
 
-  function updatePreviewBanner() {
-    const on = player.mode === 'preview' && player.previewSong && player.listening;
-    $('#preview-banner').classList.toggle('hidden', !on);
-    if (on) $('#preview-title').textContent = player.previewSong.title;
-  }
-
   audio.addEventListener('ended', () => { if (player.mode === 'preview') backToThrone(); });
   audio.addEventListener('error', () => { if (player.listening && audio.src) toast('Файлът не може да се пусне.', true); });
-
-  // ---------- Действия ----------
   listenBtn.addEventListener('click', () => setListening(!player.listening));
   $('#back-btn').addEventListener('click', backToThrone);
 
+  // ---------- Действия ----------
   async function challenge(songId) {
     try {
       const r = await post('/api/challenge', { songId, by: nick() });
-      if (r.crowned) toast('👑 Песента седна направо на трона!');
-      else if (r.startedNow) toast('⚔️ Дуелът започна! Гласувай.');
-      else toast(`⚔️ В опашката си, номер ${r.position}.`);
+      if (r.crowned) toast('Песента зае трона.');
+      else if (r.startedNow) toast('Дуелът започна. Гласувай.');
+      else toast(`Добавена в опашката, на ${r.position}. място.`);
       refresh();
     } catch (e) { toast(e.message, true); }
   }
@@ -438,201 +506,38 @@
     } catch (e) { toast(e.message, true); }
   }
 
-  // ---------- Бакшиши ----------
-  const tipDialog = $('#tip-dialog');
-  const tipCustom = $('#tip-custom');
-  let tipSongId = null;
-  let tipAmount = 2;
-
-  function tipValue() {
-    const custom = Math.round(Number(tipCustom.value));
-    return tipCustom.value ? custom : tipAmount;
+  // ---------- Добавяне на песен ----------
+  const addDialog = $('#add-dialog');
+  function showAddTab(name) {
+    $$('[data-addtab]').forEach((b) => b.classList.toggle('active', b.dataset.addtab === name));
+    $$('[data-addpanel]').forEach((p) => p.classList.toggle('hidden', p.dataset.addpanel !== name));
   }
-  function updateTipButton() {
-    const v = tipValue();
-    const ok = Number.isFinite(v) && v >= 1 && v <= 50;
-    $('#tip-submit').textContent = ok ? `Изпрати ${eur(v)}` : 'Избери сума от 1 до 50 €';
-    $('#tip-submit').disabled = !ok;
-  }
+  $$('[data-addtab]').forEach((b) => b.addEventListener('click', () => showAddTab(b.dataset.addtab)));
+  $('#add-btn').addEventListener('click', () => addDialog.showModal());
 
-  async function openTip(songId) {
-    const s = songIndex.get(songId);
-    if (!s) return;
-    tipSongId = songId;
-    $('#tip-artist').textContent = s.artist;
-    $('#tip-song').textContent = `за песента „${s.title}“`;
-    $('#tip-message').value = '';
-    tipCustom.value = '';
-    tipAmount = 2;
-    document.querySelectorAll('.amount').forEach((x) => x.classList.toggle('active', Number(x.dataset.amount) === tipAmount));
-    updateTipButton();
-    $('#tip-fan-note').textContent = '';
-    tipDialog.showModal();
-    // Покажи колко точки липсват до значката „Най-голям фен“
-    try {
-      const a = await api(`/api/artist?name=${encodeURIComponent(s.artist)}&voterId=${encodeURIComponent(voterId)}`);
-      const note = $('#tip-fan-note');
-      if (nick() === 'Анонимен') note.textContent = '🏅 Задай си име горе, за да можеш да спечелиш значка „Най-голям фен“.';
-      else if (a.fans.some((f) => f.isMe && f.isBiggestFan)) note.textContent = `🏅 Ти си най-големият фен на ${a.artist}! Всяко евро носи ${a.points.euro} точки.`;
-      else if (a.biggestFan) {
-        const mine = a.me ? a.me.score : 0;
-        const need = Math.max(1, Math.ceil((a.biggestFan.score - mine + 1) / a.points.euro));
-        note.textContent = `🏅 Най-голям фен е ${a.biggestFan.name} (${a.biggestFan.score} т.). Изпрати поне ${eur(need)}, за да заемеш първото място.`;
-      } else note.textContent = `🏅 ${a.artist} още няма най-голям фен. Това може да си ти!`;
-    } catch { /* без бележка */ }
-  }
-
-  document.querySelectorAll('.amount').forEach((b) => b.addEventListener('click', () => {
-    tipAmount = Number(b.dataset.amount);
-    tipCustom.value = '';
-    document.querySelectorAll('.amount').forEach((x) => x.classList.toggle('active', x === b));
-    updateTipButton();
-  }));
-  tipCustom.addEventListener('input', () => {
-    document.querySelectorAll('.amount').forEach((x) => x.classList.toggle('active', !tipCustom.value && Number(x.dataset.amount) === tipAmount));
-    updateTipButton();
-  });
-
-  $('#tip-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const amount = tipValue();
-    if (!tipSongId) return;
-    const btn = $('#tip-submit');
-    btn.disabled = true;
-    try {
-      const r = await post('/api/tip', { songId: tipSongId, amount, by: nick(), voterId, message: $('#tip-message').value });
-      tipDialog.close();
-      toast(r.becameBiggestFan ? '🏅 Вече си най-големият фен на този артист!' : `💸 Благодарим! Изпрати ${eur(amount)} (тестов режим)`);
-      loadBadges();
-    } catch (err) { toast(err.message, true); }
-    btn.disabled = false;
-  });
-
-  // ---------- Страница на артист ----------
-  const artistDialog = $('#artist-dialog');
-  async function openArtist(name) {
-    const body = $('#artist-body');
-    body.innerHTML = '<p class="muted">Зарежда се…</p>';
-    if (!artistDialog.open) artistDialog.showModal();
-    try {
-      const a = await api(`/api/artist?name=${encodeURIComponent(name)}&voterId=${encodeURIComponent(voterId)}`);
-      indexSongs(a.songs);
-      const tipSong = a.songs.find((s) => s.original);
-      body.innerHTML = `
-        <div><div class="tags">${a.original ? '<span class="tag gold">Нов артист</span>' : '<span class="tag">YouTube</span>'}</div>
-          <h3 class="song-title" style="font-size:26px">${esc(a.artist)}</h3></div>
-        <div class="stats">
-          <div class="stat"><b>${a.totals.wins}</b><span>победи</span></div>
-          <div class="stat"><b>${a.totals.defenses}</b><span>защити</span></div>
-          <div class="stat"><b>${a.original ? eur(a.totals.tips) : '—'}</b><span>бакшиши</span></div>
-        </div>
-        ${a.biggestFan
-          ? `<div class="big-fan"><span class="medal">🏅</span><div><div class="hint" style="margin:0">Най-голям фен</div><div class="who">${esc(a.biggestFan.name)}</div><div class="muted small">${a.biggestFan.score} точки</div></div></div>`
-          : '<div class="big-fan"><span class="medal">🏅</span><div><div class="who">Още няма най-голям фен</div><div class="muted small">Гласувай за песните на артиста или му прати бакшиш.</div></div></div>'}
-        ${a.fans.length ? `<div>
-          <h2 style="margin-bottom:6px">Класация на феновете</h2>
-          <table class="fan-table">
-            <thead><tr><th>#</th><th>Фен</th><th class="num">Гласове</th><th class="num">Бакшиши</th><th class="num">Точки</th></tr></thead>
-            <tbody>${a.fans.map((f, i) => `<tr class="${f.isMe ? 'me' : ''}">
-              <td>${i + 1}</td><td>${esc(f.name)}${f.isBiggestFan ? ' 🏅' : ''}${f.isMe ? ' <span class="muted small">(ти)</span>' : ''}</td>
-              <td class="num">${f.votes}</td><td class="num">${eur(f.tips)}</td><td class="num pts">${f.score}</td></tr>`).join('')}</tbody>
-          </table></div>` : ''}
-        <p class="my-rank">${a.me ? (a.me.rank ? `Ти си №${a.me.rank} с ${a.me.score} точки.` : `Имаш ${a.me.score} точки. Задай си име, за да влезеш в класацията.`) : 'Още нямаш точки за този артист.'} Точки: ${a.points.vote} за глас, ${a.points.euro} за всяко евро бакшиш. Гласовете се отчитат след края на дуела.</p>
-        ${a.recentTips.length ? `<div><h2 style="margin-bottom:6px">Последни бакшиши</h2><div class="list">${a.recentTips.map((t) => `
-          <div class="item tip-item"><span class="amt">${eur(t.amount)}</span><div class="grow">
-            <div class="t">${esc(t.by)}${t.byBiggestFan ? ' 🏅' : ''}</div><div class="s">за „${esc(t.songTitle)}“</div>
-            ${t.message ? `<div class="tip-msg">„${esc(t.message)}“</div>` : ''}</div></div>`).join('')}</div></div>` : ''}
-        <div><h2 style="margin-bottom:6px">Песни</h2><div class="list">${a.songs.map((s) => `
-          <div class="item">${thumb(s)}<div class="grow"><div class="t">${esc(s.title)}</div><div class="s">${s.duelWins} победи · ${s.defenses} защити</div></div>
-          <button class="btn small" data-preview="${s.id}">▶</button></div>`).join('')}</div></div>
-        ${tipSong ? `<button class="btn gold big" data-tip="${tipSong.id}">💸 Прати бакшиш на ${esc(a.artist)}</button>` : ''}`;
-    } catch (err) {
-      body.innerHTML = `<p class="empty">${esc(err.message)}</p>`;
-    }
-  }
-
-  // ---------- Моите значки ----------
-  const badgesDialog = $('#badges-dialog');
-  let me = null;
-  async function loadBadges() {
-    try {
-      me = await api('/api/me?voterId=' + encodeURIComponent(voterId));
-      $('#badge-count').textContent = me.badges.length;
-      $('#badges-btn').classList.toggle('has', me.badges.length > 0);
-      if (badgesDialog.open) renderBadges();
-    } catch { /* ignore */ }
-  }
-  function renderBadges() {
-    const body = $('#badges-body');
-    if (!me) { body.innerHTML = '<p class="muted">Зарежда се…</p>'; return; }
-    const named = nick() !== 'Анонимен';
-    body.innerHTML = `
-      <h3>🏅 Моите значки</h3>
-      ${named ? '' : '<p class="fan-note">Задай си име горе вляво от този бутон, за да можеш да печелиш значки.</p>'}
-      <p class="hint">Ставаш <b>Най-голям фен</b> на артист, когато имаш най-много точки за него: ${me.points.vote} за всеки глас и ${me.points.euro} за всяко евро бакшиш.</p>
-      ${me.supported.length ? `<div class="badge-list">${me.supported.map((s) => `
-        <div class="badge-row ${s.isBiggestFan ? 'gold' : ''}">
-          <span style="font-size:22px">${s.isBiggestFan ? '🏅' : '🎧'}</span>
-          <div class="grow"><div class="t">${artistLink(s.artist)}</div>
-            <div class="s">${s.isBiggestFan ? 'Най-голям фен · ' : ''}${s.votes} гласа · ${eur(s.tips)} бакшиши</div></div>
-          <span class="dur">${s.score} т.</span>
-        </div>`).join('')}</div>`
-      : '<p class="empty">Още не си подкрепял артисти. Гласувай в дуел или прати бакшиш.</p>'}`;
-  }
-  $('#badges-btn').addEventListener('click', async () => {
-    renderBadges();
-    badgesDialog.showModal();
-    await loadBadges();
-    renderBadges();
-  });
-
-  // Затваряне на диалозите: бутон ✕ или клик извън тях
-  document.querySelectorAll('dialog').forEach((d) => {
-    d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
-  });
-
-  document.addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (!b) return;
-    if (b.hasAttribute('data-close')) { b.closest('dialog').close(); return; }
-    if (b.dataset.artist) { openArtist(b.dataset.artist); return; }
-    if (b.dataset.tip && artistDialog.open) artistDialog.close();
-    if (b.dataset.preview && b.closest('dialog')) b.closest('dialog').close();
-    if (b.dataset.preview) { const s = songIndex.get(b.dataset.preview); if (s) preview(s); }
-    else if (b.dataset.vote) vote(b.dataset.vote);
-    else if (b.dataset.challenge) challenge(b.dataset.challenge);
-    else if (b.dataset.tip) openTip(b.dataset.tip);
-    else if (b.dataset.filter) {
-      libFilter = b.dataset.filter;
-      document.querySelectorAll('.seg-btn').forEach((x) => x.classList.toggle('active', x === b));
-      renderLibrary();
-    }
-  });
-  $('#search').addEventListener('input', renderLibrary);
-
-  // ---------- Форми ----------
   $('#yt-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = e.target;
     const btn = f.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
-      const r = await post('/api/songs', {
-        url: f.url.value, title: f.title.value, artist: f.artist.value, addedBy: nick(),
-      });
-      toast(r.existing ? 'Тази песен вече е в библиотеката.' : '🎶 Добавена: ' + r.song.title);
+      const r = await post('/api/songs', { url: f.url.value, title: f.title.value, artist: f.artist.value, addedBy: nick() });
       indexSongs([r.song]);
       if (f.challenge.checked) await challenge(r.song.id);
+      else toast(r.existing ? 'Тази песен вече е в списъка.' : `Добавена: ${r.song.title}`);
       f.url.value = ''; f.title.value = ''; f.artist.value = '';
+      addDialog.close();
       loadLibrary();
     } catch (err) { toast(err.message, true); }
     btn.disabled = false;
   });
 
   const fileInput = $('#upload-form input[type=file]');
+  const fileLabel = $('#upload-form .file-label');
+  const FILE_HINT = fileLabel.textContent;
   fileInput.addEventListener('change', () => {
     const name = fileInput.files[0]?.name;
-    $('#upload-form .file-label').textContent = name ? '🎵 ' + name : '🎵 Избери аудио файл';
+    fileLabel.textContent = name || FILE_HINT;
     const titleInput = $('#upload-form').title;
     if (name && !titleInput.value) titleInput.value = name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
   });
@@ -649,22 +554,194 @@
       original: f.original.checked ? 'true' : 'false', ext,
     });
     btn.disabled = true;
-    btn.textContent = 'Качва се…';
+    btn.textContent = 'Качване…';
     try {
       const r = await api('/api/upload?' + params, {
         method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file,
       });
-      toast('🎵 Качена: ' + r.song.title);
       indexSongs([r.song]);
       if (f.challenge.checked) await challenge(r.song.id);
+      else toast(`Качена: ${r.song.title}`);
       f.reset();
       f.challenge.checked = true;
-      $('#upload-form .file-label').textContent = '🎵 Избери аудио файл';
+      fileLabel.textContent = FILE_HINT;
+      addDialog.close();
       loadLibrary();
     } catch (err) { toast(err.message, true); }
     btn.disabled = false;
-    btn.textContent = 'Качи';
+    btn.textContent = 'Качи песента';
   });
+
+  // ---------- Бакшиши ----------
+  const tipDialog = $('#tip-dialog');
+  const tipCustom = $('#tip-custom');
+  let tipSongId = null;
+  let tipAmount = 2;
+  const tipValue = () => (tipCustom.value ? Math.round(Number(tipCustom.value)) : tipAmount);
+
+  function updateTipButton() {
+    const v = tipValue();
+    const ok = Number.isFinite(v) && v >= 1 && v <= 50;
+    $('#tip-submit').textContent = ok ? `Изпрати ${eur(v)}` : 'Сумата е от 1 до 50 €';
+    $('#tip-submit').disabled = !ok;
+  }
+
+  async function openTip(songId) {
+    const s = songIndex.get(songId);
+    if (!s) return;
+    tipSongId = songId;
+    $('#tip-artist').textContent = s.artist;
+    $('#tip-song').textContent = `За песента „${s.title}“`;
+    $('#tip-message').value = '';
+    tipCustom.value = '';
+    tipAmount = 2;
+    $$('.amount').forEach((x) => x.classList.toggle('active', Number(x.dataset.amount) === tipAmount));
+    updateTipButton();
+    const note = $('#tip-fan-note');
+    note.textContent = '';
+    tipDialog.showModal();
+    try {
+      const a = await api(`/api/artist?name=${encodeURIComponent(s.artist)}&voterId=${encodeURIComponent(voterId)}`);
+      if (nick() === ANON) note.textContent = 'Напиши името си горе, за да можеш да станеш най-голям фен на артиста.';
+      else if (a.fans.some((f) => f.isMe && f.isBiggestFan)) note.textContent = `Ти си най-големият фен на ${a.artist}. Всяко евро ти носи ${a.points.euro} точки.`;
+      else if (a.biggestFan) {
+        const mine = a.me ? a.me.score : 0;
+        const need = Math.max(1, Math.ceil((a.biggestFan.score - mine + 1) / a.points.euro));
+        note.textContent = `Най-голям фен е ${a.biggestFan.name} с ${a.biggestFan.score} точки. С ${eur(need)} заемаш първото място.`;
+      } else note.textContent = `${a.artist} още няма най-голям фен. С този бакшиш ставаш ти.`;
+    } catch { /* без бележка */ }
+  }
+
+  $$('.amount').forEach((b) => b.addEventListener('click', () => {
+    tipAmount = Number(b.dataset.amount);
+    tipCustom.value = '';
+    $$('.amount').forEach((x) => x.classList.toggle('active', x === b));
+    updateTipButton();
+  }));
+  tipCustom.addEventListener('input', () => {
+    $$('.amount').forEach((x) => x.classList.toggle('active', !tipCustom.value && Number(x.dataset.amount) === tipAmount));
+    updateTipButton();
+  });
+
+  $('#tip-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const amount = tipValue();
+    if (!tipSongId) return;
+    const btn = $('#tip-submit');
+    btn.disabled = true;
+    try {
+      const r = await post('/api/tip', { songId: tipSongId, amount, by: nick(), voterId, message: $('#tip-message').value });
+      tipDialog.close();
+      toast(r.becameBiggestFan ? 'Изпратено. Вече си най-големият фен на артиста.' : `Изпратено: ${eur(amount)}. Тестов режим.`);
+      loadBadges();
+    } catch (err) { toast(err.message, true); }
+    btn.disabled = false;
+  });
+
+  // ---------- Артист ----------
+  const artistDialog = $('#artist-dialog');
+  async function openArtist(name) {
+    const head = $('#artist-head');
+    const body = $('#artist-body');
+    head.innerHTML = `<div class="artist-name">${esc(name)}</div>`;
+    body.innerHTML = '<p class="muted">Зарежда се…</p>';
+    if (!artistDialog.open) artistDialog.showModal();
+    try {
+      const a = await api(`/api/artist?name=${encodeURIComponent(name)}&voterId=${encodeURIComponent(voterId)}`);
+      indexSongs(a.songs);
+      const tipSong = a.songs.find((s) => s.original);
+      head.innerHTML = `<div class="artist-name">${esc(a.artist)}</div>
+        <p class="note" style="margin:2px 0 0">${a.original ? 'Нов артист с оригинална музика' : 'Песни от YouTube'}</p>`;
+      body.innerHTML = `
+        <div class="stats">
+          <div class="stat"><b>${a.totals.wins}</b><span>${a.totals.wins === 1 ? 'победа' : 'победи'}</span></div>
+          <div class="stat"><b>${a.totals.defenses}</b><span>${a.totals.defenses === 1 ? 'защита' : 'защити'}</span></div>
+          <div class="stat"><b>${a.original ? eur(a.totals.tips) : '—'}</b><span>бакшиши</span></div>
+        </div>
+        <div class="fan-hero">${ICON.medal}
+          ${a.biggestFan
+            ? `<div><div class="s">Най-голям фен</div><div class="who">${esc(a.biggestFan.name)}</div><div class="s">${a.biggestFan.score} точки</div></div>`
+            : '<div><div class="who">Още няма най-голям фен</div><div class="s">Гласувай за песните на артиста или изпрати бакшиш.</div></div>'}
+        </div>
+        ${a.fans.length ? `<div>
+          <div class="section-title">Фенове</div>
+          <table class="table">
+            <thead><tr><th></th><th>Име</th><th class="r">Гласове</th><th class="r">Бакшиши</th><th class="r">Точки</th></tr></thead>
+            <tbody>${a.fans.map((f, i) => `<tr class="${f.isMe ? 'me' : ''}">
+              <td class="${i === 0 ? 'gold' : 'muted'}">${i + 1}</td>
+              <td>${esc(f.name)}${f.isMe ? ' <span class="muted">(ти)</span>' : ''}</td>
+              <td class="r">${f.votes}</td><td class="r">${eur(f.tips)}</td><td class="r pts ${f.isBiggestFan ? 'gold' : ''}">${f.score}</td></tr>`).join('')}</tbody>
+          </table></div>` : ''}
+        <p class="note" style="margin:0">${a.me ? (a.me.rank ? `Ти си на ${a.me.rank}. място с ${a.me.score} точки.` : `Имаш ${a.me.score} точки. Напиши името си горе, за да се появиш в класацията.`) : 'Още нямаш точки за този артист.'}
+          Всеки глас носи ${a.points.vote} точка, всяко евро бакшиш носи ${a.points.euro}. Гласовете се броят след края на дуела.</p>
+        ${a.recentTips.length ? `<div><div class="section-title">Бакшиши</div>${a.recentTips.map((t) => `
+          <div class="feed-item"><div class="line"><span class="amt">${eur(t.amount)}</span> от ${esc(t.by)}</div>
+            <div class="s">${esc(t.songTitle)}</div>${t.message ? `<div class="msg">${esc(t.message)}</div>` : ''}</div>`).join('')}</div>` : ''}
+        <div><div class="section-title">Песни</div>${a.songs.map((s) => `
+          <div class="row">${thumb(s)}<div style="min-width:0"><div class="t">${esc(s.title)}</div>
+            <div class="s">${plural(s.duelWins, 'победа', 'победи')}, ${plural(s.defenses, 'защита', 'защити')}</div></div>
+            <button class="ibtn" data-preview="${s.id}" title="Чуй" aria-label="Чуй">${ICON.play}</button></div>`).join('')}</div>
+        ${tipSong ? `<button class="btn primary wide" data-tip="${tipSong.id}">Изпрати бакшиш на ${esc(a.artist)}</button>` : ''}`;
+    } catch (err) {
+      body.innerHTML = `<p class="empty">${esc(err.message)}</p>`;
+    }
+  }
+
+  // ---------- Значки ----------
+  const badgesDialog = $('#badges-dialog');
+  let me = null;
+  async function loadBadges() {
+    try {
+      me = await api('/api/me?voterId=' + encodeURIComponent(voterId));
+      $('#badge-count').textContent = me.badges.length;
+      $('#badges-btn').classList.toggle('has', me.badges.length > 0);
+      if (badgesDialog.open) renderBadges();
+    } catch { /* ignore */ }
+  }
+  function renderBadges() {
+    const body = $('#badges-body');
+    if (!me) { body.innerHTML = '<p class="muted">Зарежда се…</p>'; return; }
+    body.innerHTML = `
+      ${nick() === ANON ? '<p class="callout">Напиши името си горе. Значки получават само фенове с име.</p>' : ''}
+      <p class="note" style="margin:0">Ставаш най-голям фен на артист, когато имаш най-много точки за него. Всеки глас носи ${me.points.vote} точка, всяко евро бакшиш носи ${me.points.euro}.</p>
+      ${me.supported.length ? `<div>${me.supported.map((s) => `
+        <div class="row">
+          <div class="thumb" style="width:32px;color:${s.isBiggestFan ? 'var(--gold)' : 'var(--faint)'}">${ICON.medal}</div>
+          <div style="min-width:0"><div class="t">${artistLink(s.artist)}</div>
+            <div class="s">${s.isBiggestFan ? 'Най-голям фен, ' : ''}${plural(s.votes, 'глас', 'гласа')}, ${eur(s.tips)} бакшиши</div></div>
+          <span class="num strong">${s.score} т.</span>
+        </div>`).join('')}</div>`
+      : '<p class="empty">Още не си подкрепял артисти. Гласувай в дуел или изпрати бакшиш.</p>'}`;
+  }
+  $('#badges-btn').addEventListener('click', async () => {
+    renderBadges();
+    badgesDialog.showModal();
+    await loadBadges();
+    renderBadges();
+  });
+
+  // ---------- Общи кликове ----------
+  $$('dialog').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.hasAttribute('data-close')) { b.closest('dialog').close(); return; }
+    if (b.hasAttribute('data-open-add')) { addDialog.showModal(); return; }
+    if (b.dataset.artist) { openArtist(b.dataset.artist); return; }
+    if (b.dataset.tip && artistDialog.open) artistDialog.close();
+    if (b.dataset.preview && b.closest('dialog')) b.closest('dialog').close();
+    if (b.dataset.preview) { const s = songIndex.get(b.dataset.preview); if (s) preview(s); }
+    else if (b.dataset.vote) vote(b.dataset.vote);
+    else if (b.dataset.challenge) challenge(b.dataset.challenge);
+    else if (b.dataset.tip) openTip(b.dataset.tip);
+    else if (b.dataset.filter) {
+      libFilter = b.dataset.filter;
+      $$('[data-filter]').forEach((x) => x.classList.toggle('active', x === b));
+      renderLibrary();
+    }
+  });
+  $('#search').addEventListener('input', renderLibrary);
 
   refresh();
   loadLibrary();
