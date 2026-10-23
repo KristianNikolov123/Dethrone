@@ -123,7 +123,41 @@ async function youtubeMeta(videoId) {
   } catch { return null; }
 }
 
+// ---------- Начало и край на песента ----------
+// Много клипове имат въведение или финал без музика, затова всяка песен може да има начало и край (в секунди).
+const MAX_SECONDS = 3 * 3600;
+function parseSeconds(v) {
+  const r = parseSecondsRaw(v);
+  return r === null || Number.isNaN(r) || r <= MAX_SECONDS ? r : NaN;
+}
+function parseSecondsRaw(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 && v <= MAX_SECONDS ? Math.round(v * 10) / 10 : NaN;
+  const str = String(v).trim();
+  let m = str.match(/^(\d+):([0-5]?\d)(?:\.(\d))?$/);                 // 1:35 или 1:35.5
+  if (m) return Number(m[1]) * 60 + Number(m[2]) + (m[3] ? Number(m[3]) / 10 : 0);
+  m = str.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);               // 95, 95s, 1m35s, 1h2m3s (както в YouTube линковете)
+  if (m && (m[1] || m[2] || m[3])) return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);
+  const n = Number(str);
+  return Number.isFinite(n) && n >= 0 && n <= MAX_SECONDS ? n : NaN;
+}
+function youtubeStart(input) {
+  try {
+    const u = new URL(String(input || '').trim());
+    const t = u.searchParams.get('t') || u.searchParams.get('start');
+    const s = parseSeconds(t);
+    return Number.isFinite(s) && s > 0 ? s : null;
+  } catch { return null; }
+}
+
 // ---------- Изгледи за клиента ----------
+// viewer е гласоподавателят, за когото се строи отговорът (за да знаем дали може да редактира песента)
+let viewer = null;
+function withViewer(voterId, fn) {
+  viewer = voterId || null;
+  try { return fn(); } finally { viewer = null; }
+}
+
 function songView(s) {
   if (!s) return null;
   return {
@@ -132,6 +166,8 @@ function songView(s) {
     original: s.type === 'audio', addedBy: s.addedBy,
     duelWins: s.duelWins || 0, defenses: s.defenses || 0, tipsTotal: s.tipsTotal || 0,
     createdAt: s.createdAt,
+    startAt: s.startAt || 0, endAt: s.endAt || null,
+    canEdit: !s.addedById || (!!viewer && s.addedById === viewer),
     biggestFan: (biggestFanOf(s.artist) || {}).name || null,
   };
 }
@@ -371,9 +407,34 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (m === 'GET' && p === '/api/state') return sendJson(res, 200, publicState(clean(url.searchParams.get('voterId'), 64)));
+  if (m === 'GET' && p === '/api/state') {
+    const v = clean(url.searchParams.get('voterId'), 64);
+    return sendJson(res, 200, withViewer(v, () => publicState(v)));
+  }
 
-  if (m === 'GET' && p === '/api/songs') return sendJson(res, 200, { songs: [...db.songs].reverse().map(songView) });
+  if (m === 'GET' && p === '/api/songs') {
+    const v = clean(url.searchParams.get('voterId'), 64);
+    return sendJson(res, 200, withViewer(v, () => ({ songs: [...db.songs].reverse().map(songView) })));
+  }
+
+  // Начало и край на песента. Може да ги променя този, който е добавил песента.
+  const trimMatch = p.match(/^\/api\/songs\/([a-f0-9]{12})\/trim$/);
+  if (m === 'POST' && trimMatch) {
+    const body = await readJson(req);
+    const song = songById(trimMatch[1]);
+    const voterId = clean(body.voterId, 64);
+    if (!song) throw new HttpError(404, 'Няма такава песен.');
+    if (song.addedById && song.addedById !== voterId) throw new HttpError(403, 'Само този, който е добавил песента, може да променя началото и края ѝ.');
+    const start = parseSeconds(body.startAt);
+    const end = parseSeconds(body.endAt);
+    if (Number.isNaN(start) || Number.isNaN(end)) throw new HttpError(400, 'Въведи време като 1:35 или в секунди.');
+    const s0 = start || 0;
+    if (end !== null && end <= s0 + 5) throw new HttpError(400, 'Краят трябва да е поне 5 секунди след началото.');
+    song.startAt = s0;
+    song.endAt = end;
+    save(); broadcast('state'); broadcast('library');
+    return sendJson(res, 200, withViewer(voterId, () => ({ song: songView(song) })));
+  }
 
   // Добавяне на песен от YouTube
   if (m === 'POST' && p === '/api/songs') {
@@ -381,23 +442,28 @@ async function handleApi(req, res, url) {
     const videoId = youtubeId(body.url);
     if (!videoId) throw new HttpError(400, 'Невалиден YouTube линк.');
     const existing = db.songs.find((s) => s.videoId === videoId);
-    if (existing) return sendJson(res, 200, { song: songView(existing), existing: true });
+    const adderId = clean(body.voterId, 64) || null;
+    if (existing) return sendJson(res, 200, withViewer(adderId, () => ({ song: songView(existing), existing: true })));
     let title = clean(body.title, 120);
     let artist = clean(body.artist, 80);
     if (!title || !artist) {
       const meta = await youtubeMeta(videoId);
       if (meta) { title = title || clean(meta.title, 120); artist = artist || clean(meta.artist, 80); }
     }
+    // Начало: от полето във формата или от ?t= в линка
+    let startAt = parseSeconds(body.startAt);
+    if (Number.isNaN(startAt)) throw new HttpError(400, 'Началото трябва да е като 1:35 или в секунди.');
+    if (startAt === null) startAt = youtubeStart(body.url);
     const song = {
       id: newId(), type: 'youtube', videoId,
       title: title || 'YouTube видео ' + videoId, artist: artist || 'Неизвестен изпълнител',
-      addedBy: clean(body.addedBy, 30) || 'Анонимен', createdAt: Date.now(),
-      duelWins: 0, defenses: 0, tipsTotal: 0,
+      addedBy: clean(body.addedBy, 30) || 'Анонимен', addedById: adderId, createdAt: Date.now(),
+      duelWins: 0, defenses: 0, tipsTotal: 0, startAt: startAt || 0, endAt: null,
     };
     db.songs.push(song);
     save();
     broadcast('library');
-    return sendJson(res, 200, { song: songView(song) });
+    return sendJson(res, 200, withViewer(adderId, () => ({ song: songView(song) })));
   }
 
   // Качване на оригинална песен от артист
@@ -410,15 +476,16 @@ async function handleApi(req, res, url) {
     if (!title || !artist) throw new HttpError(400, 'Въведи име на песента и артист.');
     if (q.get('original') !== 'true') throw new HttpError(400, 'Потвърди, че песента е твоя оригинална музика.');
     const file = await receiveUpload(req, ext);
+    const adderId = clean(q.get('voterId'), 64) || null;
     const song = {
       id: newId(), type: 'audio', audioUrl: '/uploads/' + file.name,
-      title, artist, addedBy: clean(q.get('addedBy'), 30) || artist, createdAt: Date.now(),
-      duelWins: 0, defenses: 0, tipsTotal: 0,
+      title, artist, addedBy: clean(q.get('addedBy'), 30) || artist, addedById: adderId, createdAt: Date.now(),
+      duelWins: 0, defenses: 0, tipsTotal: 0, startAt: 0, endAt: null,
     };
     db.songs.push(song);
     save();
     broadcast('library');
-    return sendJson(res, 200, { song: songView(song) });
+    return sendJson(res, 200, withViewer(adderId, () => ({ song: songView(song) })));
   }
 
   // Предизвикване на трона

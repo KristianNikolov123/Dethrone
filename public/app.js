@@ -14,6 +14,7 @@
     note: '<svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
     crown: '<svg viewBox="0 0 24 24"><path d="M4 17l-1-9 5 3.5L12 5l4 6.5L21 8l-1 9z"/></svg>',
     medal: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="12" r="5"/><path d="M7 7.5L5 2h3l2 4 2-4h3l-2 5.5"/></svg>',
+    trim: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v12M16 4v12M4 10h12M7 7l-3 3 3 3M13 7l3 3-3 3"/></svg>',
     coin: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M12.5 7.5a3 3 0 100 5M6.5 9.2h4M6.5 11h4"/></svg>',
   };
 
@@ -85,7 +86,7 @@
   }
   async function loadLibrary() {
     try {
-      library = (await api('/api/songs')).songs;
+      library = (await api('/api/songs?voterId=' + encodeURIComponent(voterId))).songs;
       indexSongs(library);
       renderLibrary();
     } catch (e) { console.error(e); }
@@ -363,11 +364,15 @@
   placeDuel();
 
   // ---------- Плейър ----------
+  // Музиката тръгва сама. Ако браузърът не позволява звук, преди човек да е кликнал,
+  // тя върви без звук и звукът се включва при първото кликване където и да е.
+  // Всеки слушател чува песента от нейното начало (startAt) до края ѝ (endAt), после отначало.
   const audio = $('#audio-player');
   const cover = $('#cover');
   const listenBtn = $('#listen-btn');
   const volume = $('#volume');
-  const player = { listening: false, mode: 'throne', previewSong: null, key: null, yt: null, needsSync: false, syncSince: null };
+  const player = { listening: true, mode: 'throne', previewSong: null, key: null, yt: null, current: null, currentId: null };
+  const sound = { unlocked: false };
 
   volume.value = lsGet('bc_volume') || '80';
   function applyVolume() {
@@ -379,10 +384,58 @@
   volume.addEventListener('input', applyVolume);
   applyVolume();
 
+  // Проверка дали браузърът позволява звук без кликване (с кратък беззвучен файл)
+  function silentWavUrl() {
+    const n = 800, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, 'data'); v.setUint32(40, n * 2, true);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  async function probeSound() {
+    try {
+      const a = new Audio(silentWavUrl());
+      a.volume = 0;
+      await a.play();
+      a.pause();
+      return true;
+    } catch { return false; }
+  }
+
+  function applyMute() {
+    const muted = !sound.unlocked;
+    audio.muted = muted;
+    try {
+      if (player.yt && player.yt.mute) { if (muted) player.yt.mute(); else player.yt.unMute(); }
+    } catch { /* ignore */ }
+    updateTransport();
+  }
+
+  function unlockSound() {
+    if (sound.unlocked) return;
+    sound.unlocked = true;
+    // Кликът, който е включил звука, не трябва едновременно да спре музиката
+    sound.justUnlocked = true;
+    setTimeout(() => { sound.justUnlocked = false; }, 600);
+    removeUnlockListeners();
+    applyMute();
+    applyVolume();
+    // Ако браузърът е спрял файла, пусни го отново, вече със звук
+    if (player.listening && player.current && player.current.type === 'audio' && audio.paused) audio.play().catch(() => {});
+    try { if (player.listening && player.yt && player.yt.playVideo && player.current?.type === 'youtube') player.yt.playVideo(); } catch { /* ignore */ }
+  }
+  const UNLOCK_EVENTS = ['pointerdown', 'keydown', 'touchend'];
+  const onFirstGesture = () => unlockSound();
+  function addUnlockListeners() { UNLOCK_EVENTS.forEach((ev) => window.addEventListener(ev, onFirstGesture, { capture: true })); }
+  function removeUnlockListeners() { UNLOCK_EVENTS.forEach((ev) => window.removeEventListener(ev, onFirstGesture, { capture: true })); }
+  addUnlockListeners();
+  probeSound().then((ok) => { if (ok) unlockSound(); });
+
   function desired() {
-    if (player.mode === 'preview' && player.previewSong) return { song: player.previewSong, since: null };
-    if (state?.throne?.song) return { song: state.throne.song, since: state.throne.since };
-    return null;
+    if (player.mode === 'preview' && player.previewSong) return player.previewSong;
+    return state?.throne?.song || null;
   }
 
   function setCover(song, playing) {
@@ -405,53 +458,68 @@
     cover.classList.toggle('hidden', on);
   }
 
-  const offsetFor = (since, duration) =>
-    since == null || !duration || !isFinite(duration) ? 0 : ((serverNow() - since) / 1000) % duration;
-
   function updateTransport() {
-    const want = desired();
+    const song = desired();
     const line = $('#now-line');
     const sub = $('#now-sub');
     const preview = player.mode === 'preview' && player.previewSong && player.listening;
+    const mutedNow = player.listening && !sound.unlocked;
     listenBtn.classList.toggle('on', player.listening);
-    listenBtn.setAttribute('aria-label', player.listening ? 'Спри' : 'Слушай');
+    listenBtn.setAttribute('aria-label', player.listening ? 'Спри' : 'Пусни');
     $('#back-btn').classList.toggle('hidden', !preview);
+    $('#unmute-btn').classList.toggle('hidden', !mutedNow || !song);
+    $('#trim-btn').classList.toggle('hidden', !(song && song.canEdit));
     sub.classList.toggle('preview', !!preview);
-    if (!want) { line.textContent = 'Тронът е свободен'; sub.innerHTML = 'Добави песен, за да започне.'; return; }
-    line.textContent = `${want.song.title}, ${want.song.artist}`;
-    if (preview) sub.innerHTML = '<span class="dot"></span>Преглед. Само ти чуваш тази песен.';
-    else if (player.listening) sub.innerHTML = '<span class="dot"></span>Слушаш на живо заедно с всички';
-    else sub.innerHTML = 'Натисни, за да слушаш заедно с всички';
+    sub.classList.toggle('muted-hint', mutedNow);
+    if (!song) { line.textContent = 'Тронът е свободен'; sub.textContent = 'Добави песен и тя започва веднага.'; return; }
+    line.textContent = `${song.title}, ${song.artist}`;
+    if (!player.listening) sub.textContent = 'Спряно. Натисни, за да продължиш.';
+    else if (mutedNow) sub.innerHTML = '<span class="dot"></span>Без звук. Кликни където и да е.';
+    else if (preview) sub.innerHTML = '<span class="dot"></span>Преглед на песен, която не е на трона';
+    else sub.innerHTML = '<span class="dot"></span>Песента на трона';
   }
 
   function syncPlayer() {
-    const want = desired();
+    const song = desired();
     updateTransport();
-    if (!player.listening) { setCover(want?.song, false); showYt(false); positionVideo(); return; }
-    if (!want) { stopAll(); setCover(null, false); showYt(false); positionVideo(); return; }
-    const key = want.song.id + '|' + (want.since ?? 'preview');
+    if (!player.listening) { setCover(song, false); showYt(false); positionVideo(); return; }
+    if (!song) { stopAll(); setCover(null, false); showYt(false); positionVideo(); return; }
+    // Ако се смени песента, режимът или началото/краят ѝ, пускаме отначало
+    const key = [song.id, player.mode, song.startAt || 0, song.endAt || ''].join('|');
     if (key !== player.key) {
       player.key = key;
-      play(want.song, want.since);
+      play(song);
+    } else {
+      player.current = song;
     }
     positionVideo();
   }
 
-  function play(song, since) {
+  const startOf = (s) => Math.max(0, Number(s?.startAt) || 0);
+  const endOf = (s) => (s && s.endAt ? Number(s.endAt) : null);
+
+  function play(song) {
+    player.current = song;
     player.currentId = song.id;
     if (song.type === 'youtube') {
       audio.pause();
       showYt(true);
-      player.syncSince = since;
-      player.needsSync = since != null;
-      loadYt(song.videoId);
+      loadYt(song);
     } else {
       stopYt();
       showYt(false);
       setCover(song, true);
+      audio.muted = !sound.unlocked;
       audio.onloadedmetadata = () => {
-        if (since != null) { try { audio.currentTime = offsetFor(since, audio.duration); } catch { /* ignore */ } }
-        audio.play().catch(() => toast('Браузърът спря звука. Натисни бутона за пускане още веднъж.', true));
+        try { audio.currentTime = startOf(song); } catch { /* ignore */ }
+        audio.play().catch(() => {
+          // Браузърът не позволява звук без кликване: пускаме без звук, звукът се включва при първия клик
+          sound.unlocked = false;
+          addUnlockListeners();
+          audio.muted = true;
+          audio.play().catch(() => {});
+          updateTransport();
+        });
       };
       audio.src = song.audioUrl;
       audio.load();
@@ -470,44 +538,60 @@
     document.head.appendChild(s);
   }
 
-  function loadYt(videoId) {
+  function loadYt(song) {
     ensureYtApi(() => {
-      if (!player.listening) return;
+      if (!player.listening || player.current !== song) return;
+      const start = startOf(song);
       if (!player.yt) {
         player.yt = new YT.Player('yt-player', {
-          videoId,
-          playerVars: { autoplay: 1, playsinline: 1, rel: 0 },
+          videoId: song.videoId,
+          playerVars: { autoplay: 1, playsinline: 1, rel: 0, mute: sound.unlocked ? 0 : 1, start: Math.floor(start) },
           events: {
-            onReady: (e) => { applyVolume(); e.target.playVideo(); },
+            onReady: (e) => { player.ytReady = true; applyVolume(); applyMute(); e.target.playVideo(); },
             onStateChange: onYtState,
             onError: () => toast('Авторът на това видео е забранил вграждането. Избери друга песен.', true),
           },
         });
-      } else {
-        player.yt.loadVideoById(videoId);
+      } else if (player.ytReady) {
+        applyMute();
+        player.yt.loadVideoById({ videoId: song.videoId, startSeconds: start });
       }
     });
   }
 
+  function restartCurrent() {
+    const s = player.current;
+    if (!s) return;
+    if (s.type === 'youtube') { try { player.yt.seekTo(startOf(s), true); player.yt.playVideo(); } catch { /* ignore */ } }
+    else { try { audio.currentTime = startOf(s); audio.play().catch(() => {}); } catch { /* ignore */ } }
+  }
+
   function onYtState(e) {
-    const S = YT.PlayerState;
-    if (e.data === S.PLAYING && player.needsSync) {
-      const d = player.yt.getDuration();
-      if (d > 0) {
-        player.needsSync = false;
-        const off = offsetFor(player.syncSince, d);
-        if (off > 2) player.yt.seekTo(off, true);
-      }
-    }
-    if (e.data === S.ENDED) {
+    if (e.data === YT.PlayerState.ENDED) {
       if (player.mode === 'preview') { backToThrone(); return; }
-      player.yt.seekTo(0, true);
-      player.yt.playVideo();
+      restartCurrent();
     }
   }
 
+  // Следи за края на песента (endAt) и я пуска отначало
+  setInterval(() => {
+    const s = player.current;
+    if (!player.listening || !s) return;
+    const end = endOf(s);
+    let t = null;
+    try { t = s.type === 'youtube' ? player.yt?.getCurrentTime?.() : audio.currentTime; } catch { /* ignore */ }
+    if (end && t != null && t >= end) {
+      if (player.mode === 'preview') backToThrone();
+      else restartCurrent();
+    }
+  }, 400);
+
+  const currentTime = () => {
+    try { return player.current?.type === 'youtube' ? player.yt?.getCurrentTime?.() ?? null : audio.currentTime; } catch { return null; }
+  };
+
   function stopYt() { try { if (player.yt && player.yt.pauseVideo) player.yt.pauseVideo(); } catch { /* ignore */ } }
-  function stopAll() { stopYt(); audio.pause(); player.key = null; player.currentId = null; }
+  function stopAll() { stopYt(); audio.pause(); player.key = null; player.currentId = null; player.current = null; }
 
   function setListening(on) {
     player.listening = on;
@@ -531,10 +615,69 @@
     syncPlayer();
   }
 
-  audio.addEventListener('ended', () => { if (player.mode === 'preview') backToThrone(); });
+  audio.addEventListener('ended', () => {
+    if (player.mode === 'preview') backToThrone();
+    else restartCurrent();
+  });
   audio.addEventListener('error', () => { if (player.listening && audio.src) toast('Файлът не може да се пусне.', true); });
-  listenBtn.addEventListener('click', () => setListening(!player.listening));
+  listenBtn.addEventListener('click', () => {
+    if (sound.justUnlocked && player.listening) return;
+    setListening(!player.listening);
+  });
   $('#back-btn').addEventListener('click', backToThrone);
+  $('#unmute-btn').addEventListener('click', unlockSound);
+
+  // ---------- Начало и край на песента ----------
+  const trimDialog = $('#trim-dialog');
+  let trimSong = null;
+  const fmtTime = (sec) => {
+    if (sec == null || sec === '' || !Number.isFinite(Number(sec))) return '';
+    const s = Math.max(0, Number(sec));
+    const m = Math.floor(s / 60);
+    const r = s - m * 60;
+    const whole = Math.floor(r);
+    const tenth = Math.round((r - whole) * 10);
+    return `${m}:${String(whole).padStart(2, '0')}${tenth ? '.' + tenth : ''}`;
+  };
+  function openTrim(songId) {
+    const s = songIndex.get(songId) || (player.current && player.current.id === songId ? player.current : null);
+    if (!s) return;
+    trimSong = s;
+    $('#trim-song').textContent = `${s.title}, ${s.artist}`;
+    $('#trim-start').value = s.startAt ? fmtTime(s.startAt) : '';
+    $('#trim-end').value = s.endAt ? fmtTime(s.endAt) : '';
+    updateTrimNow();
+    trimDialog.showModal();
+  }
+  function updateTrimNow() {
+    const playingThis = trimSong && player.current && player.current.id === trimSong.id && player.listening;
+    $$('[data-now]').forEach((b) => { b.disabled = !playingThis; });
+    const t = playingThis ? currentTime() : null;
+    $('#trim-now').textContent = playingThis
+      ? `Песента е на ${fmtTime(t)}. „Сега“ взима това време.`
+      : 'Пусни песента, за да можеш да вземеш времето с „Сега“.';
+  }
+  setInterval(() => { if (trimDialog.open) updateTrimNow(); }, 500);
+  $$('[data-now]').forEach((b) => b.addEventListener('click', () => {
+    const t = currentTime();
+    if (t == null) return;
+    $(b.dataset.now === 'start' ? '#trim-start' : '#trim-end').value = fmtTime(Math.round(t * 10) / 10);
+  }));
+  $('#trim-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!trimSong) return;
+    try {
+      const r = await post(`/api/songs/${trimSong.id}/trim`, {
+        voterId, startAt: $('#trim-start').value.trim(), endAt: $('#trim-end').value.trim(),
+      });
+      indexSongs([r.song]);
+      trimDialog.close();
+      toast('Запазено. Песента вече почва от ' + fmtTime(r.song.startAt || 0) + '.');
+      refresh();
+      loadLibrary();
+    } catch (err) { toast(err.message, true); }
+  });
+  $('#trim-btn').addEventListener('click', () => { const s = desired(); if (s) openTrim(s.id); });
 
   // ---------- Действия ----------
   async function challenge(songId) {
@@ -569,11 +712,13 @@
     const btn = f.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
-      const r = await post('/api/songs', { url: f.url.value, title: f.title.value, artist: f.artist.value, addedBy: nick() });
+      const r = await post('/api/songs', {
+        url: f.url.value, title: f.title.value, artist: f.artist.value, startAt: f.startAt.value.trim(), addedBy: nick(), voterId,
+      });
       indexSongs([r.song]);
       if (f.challenge.checked) await challenge(r.song.id);
       else toast(r.existing ? 'Тази песен вече е в списъка.' : `Добавена: ${r.song.title}`);
-      f.url.value = ''; f.title.value = ''; f.artist.value = '';
+      f.url.value = ''; f.title.value = ''; f.artist.value = ''; f.startAt.value = '';
       addDialog.close();
       loadLibrary();
     } catch (err) { toast(err.message, true); }
@@ -599,7 +744,7 @@
     const ext = (file.name.match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase();
     const params = new URLSearchParams({
       title: f.title.value, artist: f.artist.value, addedBy: nick(),
-      original: f.original.checked ? 'true' : 'false', ext,
+      original: f.original.checked ? 'true' : 'false', ext, voterId,
     });
     btn.disabled = true;
     btn.textContent = 'Качване…';
@@ -789,6 +934,7 @@
       } else if (d.challenger) preview(d.challenger);
       return;
     }
+    if (b.dataset.trim) { openTrim(b.dataset.trim); return; }
     if (b.dataset.preview) { const s = songIndex.get(b.dataset.preview); if (s) preview(s); }
     else if (b.dataset.vote) vote(b.dataset.vote);
     else if (b.dataset.challenge) challenge(b.dataset.challenge);

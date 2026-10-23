@@ -63,7 +63,7 @@
       <div class="video">
         <div id="yt-holder" class="hidden"><div id="yt-player"></div></div>
         <div id="cover" class="cover"><div class="cover-inner"></div></div>
-        <audio id="audio-player" preload="auto" loop></audio>
+        <audio id="audio-player" preload="auto" playsinline></audio>
       </div>
     </div>
 
@@ -81,10 +81,17 @@
         <svg class="ic-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="4" height="14" rx="1"/><rect x="13.5" y="5" width="4" height="14" rx="1"/></svg>
       </button>
       <div class="transport-text">
-        <div id="now-line" class="now-line">Натисни, за да слушаш заедно с всички</div>
+        <div id="now-line" class="now-line">Зарежда се…</div>
         <div id="now-sub" class="now-sub"></div>
       </div>
+      <button id="unmute-btn" class="btn small unmute hidden">
+        <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h3l4-3.5v11L6 12H3z"/><path d="M13 7.5a3.5 3.5 0 010 5M15 5a7 7 0 010 10"/></svg>
+        Включи звука
+      </button>
       <button id="back-btn" class="btn small hidden" title="Върни се към песента на трона">Към трона</button>
+      <button id="trim-btn" class="ibtn stroke hidden" title="Начало и край на песента" aria-label="Начало и край на песента">
+        <svg viewBox="0 0 20 20"><path d="M4 4v12M16 4v12M4 10h12M7 7l-3 3 3 3M13 7l3 3-3 3"/></svg>
+      </button>
       <label class="volume" title="Сила на звука">
         <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h3l4-3.5v11L6 12H3z"/><path d="M13 7.5a3.5 3.5 0 010 5M15 5a7 7 0 010 10"/></svg>
         <input id="volume" type="range" min="0" max="100" value="80" aria-label="Сила на звука">
@@ -152,6 +159,8 @@
         <label class="field"><span>Име на песента</span><input name="title" maxlength="120" placeholder="Попълва се само"></label>
         <label class="field"><span>Изпълнител</span><input name="artist" maxlength="80" placeholder="Попълва се само"></label>
       </div>
+      <label class="field"><span>Музиката почва от (ако клипът има въведение)</span>
+        <input name="startAt" maxlength="8" placeholder="0:00" inputmode="numeric"></label>
       <label class="check"><input type="checkbox" name="challenge" checked> Предизвикай трона веднага</label>
       <button class="btn primary wide" type="submit">Добави песента</button>
     </form>
@@ -195,6 +204,28 @@
     <p class="callout" id="tip-fan-note"></p>
     <button type="submit" class="btn primary wide" id="tip-submit">Изпрати 2 €</button>
     <p class="note center">Тестов режим. Не се теглят реални пари.</p>
+  </form>
+</dialog>
+
+<!-- НАЧАЛО И КРАЙ НА ПЕСЕНТА -->
+<dialog id="trim-dialog">
+  <form id="trim-form" class="modal">
+    <div class="modal-head">
+      <div>
+        <h3>Начало и край</h3>
+        <p class="note" id="trim-song"></p>
+      </div>
+      <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+    </div>
+    <p class="note" style="margin:0">Ако клипът има въведение или финал без музика, задай откъде да почва и къде да свършва песента.</p>
+    <div class="row2">
+      <label class="field"><span>Почва от</span>
+        <span class="time-input"><input id="trim-start" placeholder="0:00" maxlength="8"><button type="button" class="btn small" data-now="start">Сега</button></span></label>
+      <label class="field"><span>Свършва на</span>
+        <span class="time-input"><input id="trim-end" placeholder="до края" maxlength="8"><button type="button" class="btn small" data-now="end">Сега</button></span></label>
+    </div>
+    <p class="note" id="trim-now" style="margin:0"></p>
+    <button type="submit" class="btn primary wide">Запази</button>
   </form>
 </dialog>
 

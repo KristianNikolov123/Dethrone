@@ -367,6 +367,14 @@ dialog[open] { animation: rise .16s ease-out; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.bad { background: var(--live); color: #fff; }
 
+/* ---------- Звук и начало/край ---------- */
+.btn.unmute { background: var(--gold); border-color: var(--gold); color: var(--gold-ink); }
+.btn.unmute:hover { background: #F1BB52; }
+.now-sub.muted-hint .dot { color: var(--gold); }
+.time-input { display: flex; gap: 6px; }
+.time-input input { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.time-input .btn { height: 38px; }
+
 /* ---------- Дуел в центъра ---------- */
 .stage-inner { position: relative; }
 .stage-inner.dueling { width: min(100%, 1040px); }
@@ -450,6 +458,7 @@ dialog[open] { animation: rise .16s ease-out; }
   .transport { padding: 8px 10px 8px 8px; gap: 10px; }
   .play { width: 40px; height: 40px; }
   .volume { display: none; }
+  .btn.unmute { padding: 0 8px; }
   .tabs { padding: 4px 8px 0; overflow-x: auto; }
   .row2 { grid-template-columns: 1fr; }
   .duel-stage { gap: 10px; }
