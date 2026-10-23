@@ -26,8 +26,11 @@ const SEARCHES_PER_DAY = Number(process.env.SEARCHES_PER_DAY || 95); // безп
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, 'data');
-const UPLOAD_DIR = path.join(ROOT, 'uploads');
+// На хостинг (например Railway) базата и качените песни трябва да са на постоянен диск (volume),
+// иначе се губят при всяко ново качване на кода. STORAGE_DIR = пътят, на който е закачен дискът.
+const STORAGE_DIR = process.env.STORAGE_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || '';
+const DATA_DIR = STORAGE_DIR ? path.join(STORAGE_DIR, 'data') : path.join(ROOT, 'data');
+const UPLOAD_DIR = STORAGE_DIR ? path.join(STORAGE_DIR, 'uploads') : path.join(ROOT, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -944,6 +947,10 @@ setTimeout(detectMissing, 2000);
 server.listen(PORT, () => {
   console.log(`👑 Dethrone върви на http://localhost:${PORT}`);
   console.log(`   Дуел: ${DUEL_SECONDS} сек, пауза: ${BREAK_SECONDS} сек`);
+  console.log(`   Данни: ${DATA_DIR}`);
+  if (!STORAGE_DIR && (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID)) {
+    console.warn('   ВНИМАНИЕ: няма закачен постоянен диск (volume). Базата и качените песни ще се изтрият при следващото качване на кода.');
+  }
   console.log(YOUTUBE_API_KEY
     ? '   Търсене в YouTube: включено'
     : '   Търсене в YouTube: изключено (добави YOUTUBE_API_KEY във файла .env)');
