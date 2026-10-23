@@ -40,12 +40,14 @@
   <!-- ЛЯВО: дуел и опашка -->
   <aside class="col col-left" id="col-left">
     <section class="panel" id="panel-duel">
-      <div class="panel-head">
-        <h2>Дуел за трона</h2>
-        <span id="duel-status" class="status"></span>
+      <div id="duel-side-block">
+        <div class="panel-head">
+          <h2 id="duel-side-title">Следващ дуел</h2>
+          <span id="duel-status" class="status"></span>
+        </div>
+        <div id="duel"></div>
       </div>
-      <div id="duel"></div>
-      <div class="panel-head sub">
+      <div class="panel-head sub" id="queue-head">
         <h2>На опашка</h2>
         <span id="queue-count" class="muted"></span>
       </div>
@@ -55,7 +57,8 @@
 
   <!-- ЦЕНТЪР: сцената -->
   <main class="stage">
-   <div class="stage-inner">
+   <div class="stage-inner" id="stage-inner">
+    <div id="duel-stage" class="duel-stage hidden" aria-live="polite"></div>
     <div class="video-box">
       <div class="video">
         <div id="yt-holder" class="hidden"><div id="yt-player"></div></div>
@@ -81,7 +84,7 @@
         <div id="now-line" class="now-line">Натисни, за да слушаш заедно с всички</div>
         <div id="now-sub" class="now-sub"></div>
       </div>
-      <button id="back-btn" class="btn small hidden">Върни се към трона</button>
+      <button id="back-btn" class="btn small hidden" title="Върни се към песента на трона">Към трона</button>
       <label class="volume" title="Сила на звука">
         <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h3l4-3.5v11L6 12H3z"/><path d="M13 7.5a3.5 3.5 0 010 5M15 5a7 7 0 010 10"/></svg>
         <input id="volume" type="range" min="0" max="100" value="80" aria-label="Сила на звука">
@@ -93,7 +96,7 @@
   <!-- ДЯСНО: песни, класации, активност -->
   <aside class="col col-right">
     <nav class="tabs" role="tablist">
-      <button class="tab mobile-only" data-tab="duel" role="tab">Дуел</button>
+      <button class="tab mobile-only" data-tab="duel" role="tab">Опашка</button>
       <button class="tab active" data-tab="songs" role="tab">Песни</button>
       <button class="tab" data-tab="ranks" role="tab">Класации</button>
       <button class="tab" data-tab="activity" role="tab">Активност</button>

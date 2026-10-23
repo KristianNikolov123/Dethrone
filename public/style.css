@@ -367,6 +367,54 @@ dialog[open] { animation: rise .16s ease-out; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.bad { background: var(--live); color: #fff; }
 
+/* ---------- Дуел в центъра ---------- */
+.stage-inner { position: relative; }
+.stage-inner.dueling { width: min(100%, 1040px); }
+.stage-inner.dueling .now { display: none; }
+.stage-inner.dueling .video-box { height: 0; overflow: visible; }
+/* По време на дуел самият плейър се слага върху картинката на песента, която звучи */
+.stage-inner.dueling .video { position: absolute; z-index: 2; aspect-ratio: auto; border-radius: var(--r); }
+.stage-inner.dueling .video.parked { visibility: hidden; }
+
+.duel-stage { display: flex; flex-direction: column; gap: 16px; }
+.duel-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.duel-top .chip { height: 26px; font-size: 13px; padding: 0 10px; }
+.duel-timer { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 13px; }
+.duel-timer b { color: var(--text); font-size: 30px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.versus { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 18px; align-items: start; }
+.vs {
+  align-self: center; margin-top: -60px;
+  font-size: 22px; font-weight: 800; color: var(--faint); letter-spacing: -0.02em;
+}
+.side { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.side .media {
+  position: relative; aspect-ratio: 16 / 9; border-radius: var(--r); overflow: hidden;
+  background: #15171C center / cover no-repeat; display: grid; place-items: center; color: var(--faint);
+  outline: 2px solid transparent; outline-offset: 3px; transition: outline-color .2s;
+  margin-bottom: 10px;
+}
+.side .media svg { width: 40px; height: 40px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.side.voted .media { outline-color: var(--gold); }
+.side .role { font-size: 12.5px; color: var(--muted); }
+.side .role .live-txt { color: var(--live); }
+.side .title { font-size: clamp(18px, 1.8vw, 26px); font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side .artist { color: var(--muted); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side .artist .link { color: var(--text); }
+.side .fan { font-size: 12.5px; color: var(--gold); min-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side .role { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tally { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
+.tally b { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1; }
+.tally span { color: var(--muted); font-size: 13px; }
+.tally .pct { margin-left: auto; color: var(--text); font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; }
+.side.challenger .tally { flex-direction: row; }
+.side .actions { display: flex; gap: 8px; margin-top: 10px; }
+.side .actions .btn { flex: 1; height: 38px; }
+.side .actions .btn.vote { background: var(--text); color: var(--bg); border-color: var(--text); }
+.side .actions .btn.vote:hover { background: #fff; }
+.side .actions .btn.vote.mine { background: rgba(233, 174, 63, .12); color: var(--gold); border-color: var(--gold); }
+.split.big { height: 8px; border-radius: 4px; }
+.duel-foot { color: var(--faint); font-size: 12.5px; }
+
 /* ---------- По-тесни екрани ---------- */
 @media (max-width: 1280px) {
   :root { --col-left: 268px; --col-right: 312px; }
@@ -404,6 +452,18 @@ dialog[open] { animation: rise .16s ease-out; }
   .volume { display: none; }
   .tabs { padding: 4px 8px 0; overflow-x: auto; }
   .row2 { grid-template-columns: 1fr; }
+  .duel-stage { gap: 10px; }
+  .duel-timer b { font-size: 22px; }
+  .versus { gap: 8px; }
+  .vs { font-size: 15px; margin-top: -40px; }
+  .side .media { margin-bottom: 6px; }
+  .side .title { font-size: 16px; }
+  .side .artist { font-size: 13px; }
+  .tally b { font-size: 24px; }
+  .tally .pct { font-size: 13px; }
+  .side .actions { flex-direction: column; gap: 6px; margin-top: 6px; }
+  .side .actions .btn { height: 32px; }
+  .side .fan, .duel-foot, .side .by-who { display: none; }
 }
 
 @media (max-width: 380px) {

@@ -137,10 +137,17 @@
       <div class="song-meta">${meta}</div>`;
   }
 
+  // По време на дуел той заема центъра, а лявата колона показва само опашката
   function renderDuel() {
     const el = $('#duel');
     const status = $('#duel-status');
     const d = state.duel;
+    const inner = $('#stage-inner');
+    inner.classList.toggle('dueling', !!d);
+    $('#duel-stage').classList.toggle('hidden', !d);
+    $('#duel-side-block').classList.toggle('hidden', !!d);
+    $('#queue-head').classList.toggle('sub', !d);
+    renderDuelStage();
     if (!d) {
       status.className = 'status';
       status.textContent = '';
@@ -161,37 +168,75 @@
     }
     status.className = 'status live';
     status.innerHTML = '<span class="dot"></span>На живо';
+    el.innerHTML = '';
+  }
+
+  // Центърът по време на дуел: „Песен А vs Песен Б“ с гласовете
+  function renderDuelStage() {
+    const el = $('#duel-stage');
+    const d = state.duel;
+    if (!d) { el.innerHTML = ''; el.dataset.duel = ''; return; }
     const total = d.counts.champion + d.counts.challenger;
-    const pct = (k) => (total ? Math.round((d.counts[k] * 100) / total) : 50);
-    const side = (k, role) => {
+    const pctC = total ? Math.round((d.counts.champion * 100) / total) : 50;
+    const pct = { champion: pctC, challenger: 100 - pctC };
+    const media = (s, k) => (s.type === 'youtube'
+      ? `<div class="media" data-slot="${k}" style="background-image:url(${ytThumb(s.videoId, 'hqdefault')})"></div>`
+      : `<div class="media" data-slot="${k}">${ICON.note}</div>`);
+    const side = (k) => {
       const s = d[k];
-      if (!s) return '<div class="contender"><p class="empty">Песента е премахната.</p></div>';
+      if (!s) return '<div class="side"><p class="empty">Песента е премахната.</p></div>';
       const mine = d.myVote === k;
-      return `<div class="contender ${mine ? 'voted' : ''}">
-        ${thumb(s)}
-        <div style="min-width:0">
-          <div class="role">${role}</div>
-          <div class="name" title="${esc(s.title)}">${esc(s.title)}</div>
-          <div class="by">${artistLink(s.artist)}</div>
-        </div>
-        <div class="votes">${d.counts[k]}<small>${d.counts[k] === 1 ? 'глас' : 'гласа'}</small></div>
-        ${k === 'challenger' ? `<div class="fan-line plain">Предложен от ${esc(d.challengedBy)}</div>` : ''}
-        ${s.biggestFan ? `<div class="fan-line">Най-голям фен: ${esc(s.biggestFan)}</div>` : ''}
+      const role = k === 'champion'
+        ? `На трона от <span data-since="${state.throne?.since || d.startedAt}">0:00</span>`
+        : `Претендент<span class="by-who">, предложен от ${esc(d.challengedBy)}</span>`;
+      return `<div class="side ${k} ${mine ? 'voted' : ''}">
+        ${media(s, k)}
+        <div class="role">${role}</div>
+        <div class="title" title="${esc(s.title)}">${esc(s.title)}</div>
+        <div class="artist">${artistLink(s.artist)}</div>
+        <div class="fan">${s.biggestFan ? `Най-голям фен: ${esc(s.biggestFan)}` : ''}</div>
+        <div class="tally"><b>${d.counts[k]}</b><span>${d.counts[k] === 1 ? 'глас' : 'гласа'}</span><span class="pct">${total ? pct[k] + '%' : ''}</span></div>
         <div class="actions">
-          <button class="btn small" data-preview="${s.id}">Чуй</button>
-          <button class="btn small ${mine ? 'mine' : ''}" data-vote="${k}">${mine ? 'Твоят глас' : 'Гласувай'}</button>
+          <button class="btn" data-listen="${k}">Чуй</button>
+          <button class="btn vote ${mine ? 'mine' : ''}" data-vote="${k}">${mine ? 'Твоят глас' : 'Гласувай'}</button>
         </div>
       </div>`;
     };
     el.innerHTML = `
-      <div class="duel-clock" data-countdown="${d.endsAt}">0:00</div>
-      <div class="duel-clock-label">до края на гласуването</div>
-      ${side('champion', 'На трона')}
-      <div class="split"><span class="a" style="width:${pct('champion')}%"></span><span class="b" style="width:${100 - pct('champion')}%"></span></div>
-      <div class="split-legend"><span>${total ? pct('champion') + '%' : '—'}</span><span>${total ? (100 - pct('champion')) + '%' : '—'}</span></div>
-      ${side('challenger', 'Претендент')}
-      <p class="duel-rule">При равен резултат песента на трона остава.</p>`;
+      <div class="duel-top">
+        <span class="chip live"><span class="dot"></span>Дуел за трона</span>
+        <div class="duel-timer"><b data-countdown="${d.endsAt}">0:00</b>до края</div>
+      </div>
+      <div class="versus">${side('champion')}<div class="vs">vs</div>${side('challenger')}</div>
+      <div class="split big"><span class="a" style="width:${pct.champion}%"></span><span class="b" style="width:${pct.challenger}%"></span></div>
+      <p class="duel-foot">Гласувай за песента, която искаш на трона. При равен резултат сегашната остава.</p>`;
+    el.dataset.duel = d.id;
+    requestAnimationFrame(positionVideo);
   }
+
+  // Слага плейъра върху картинката на песента, която звучи в момента
+  function positionVideo() {
+    const inner = $('#stage-inner');
+    const video = $('.video');
+    if (!inner.classList.contains('dueling')) {
+      video.removeAttribute('style');
+      video.classList.remove('parked');
+      return;
+    }
+    const d = state?.duel;
+    const playingId = player.listening ? player.currentId : null;
+    const k = d && playingId === d.challenger?.id ? 'challenger' : 'champion';
+    const slot = inner.querySelector(`[data-slot="${k}"]`);
+    const show = !!(player.listening && slot && d && (playingId === d.champion?.id || playingId === d.challenger?.id));
+    video.classList.toggle('parked', !show);
+    if (!slot) return;
+    const a = slot.getBoundingClientRect();
+    const b = inner.getBoundingClientRect();
+    Object.assign(video.style, {
+      top: `${a.top - b.top}px`, left: `${a.left - b.left}px`, width: `${a.width}px`, height: `${a.height}px`,
+    });
+  }
+  new ResizeObserver(() => positionVideo()).observe($('#stage-inner'));
 
   function renderQueue() {
     const el = $('#queue');
@@ -382,15 +427,18 @@
   function syncPlayer() {
     const want = desired();
     updateTransport();
-    if (!player.listening) { setCover(want?.song, false); showYt(false); return; }
-    if (!want) { stopAll(); setCover(null, false); showYt(false); return; }
+    if (!player.listening) { setCover(want?.song, false); showYt(false); positionVideo(); return; }
+    if (!want) { stopAll(); setCover(null, false); showYt(false); positionVideo(); return; }
     const key = want.song.id + '|' + (want.since ?? 'preview');
-    if (key === player.key) return;
-    player.key = key;
-    play(want.song, want.since);
+    if (key !== player.key) {
+      player.key = key;
+      play(want.song, want.since);
+    }
+    positionVideo();
   }
 
   function play(song, since) {
+    player.currentId = song.id;
     if (song.type === 'youtube') {
       audio.pause();
       showYt(true);
@@ -459,7 +507,7 @@
   }
 
   function stopYt() { try { if (player.yt && player.yt.pauseVideo) player.yt.pauseVideo(); } catch { /* ignore */ } }
-  function stopAll() { stopYt(); audio.pause(); player.key = null; }
+  function stopAll() { stopYt(); audio.pause(); player.key = null; player.currentId = null; }
 
   function setListening(on) {
     player.listening = on;
@@ -731,6 +779,16 @@
     if (b.dataset.artist) { openArtist(b.dataset.artist); return; }
     if (b.dataset.tip && artistDialog.open) artistDialog.close();
     if (b.dataset.preview && b.closest('dialog')) b.closest('dialog').close();
+    if (b.dataset.listen) {
+      // „Чуй“ в дуела: песента на трона звучи на живо, претендентът се пуска като преглед
+      const d = state?.duel;
+      if (!d) return;
+      if (b.dataset.listen === 'champion') {
+        if (player.mode === 'preview') backToThrone();
+        if (!player.listening) setListening(true);
+      } else if (d.challenger) preview(d.challenger);
+      return;
+    }
     if (b.dataset.preview) { const s = songIndex.get(b.dataset.preview); if (s) preview(s); }
     else if (b.dataset.vote) vote(b.dataset.vote);
     else if (b.dataset.challenge) challenge(b.dataset.challenge);
