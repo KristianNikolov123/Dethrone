@@ -367,6 +367,26 @@ dialog[open] { animation: rise .16s ease-out; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.bad { background: var(--live); color: #fff; }
 
+/* ---------- Търсене в YouTube ---------- */
+.add-search { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.search-bar { display: flex; gap: 8px; }
+.search.big { flex: 1; height: 42px; min-width: 0; }
+.search-bar .btn { height: 42px; padding: 0 18px; }
+.results { display: flex; flex-direction: column; overflow-y: auto; max-height: min(52dvh, 460px); min-height: 0; margin: 0 -6px; padding: 0 6px; }
+.result {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid var(--line-soft);
+}
+.result:last-child { border-bottom: 0; }
+.result img, .result .ph { width: 96px; height: 54px; border-radius: 6px; object-fit: cover; background: var(--surface-2); }
+.result .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result .s { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result .end { display: flex; gap: 6px; align-items: center; }
+.result.added .t::after { content: ''; }
+.results .state { color: var(--muted); padding: 18px 2px; font-size: 13.5px; }
+.results .state strong { display: block; color: var(--text); margin-bottom: 4px; }
+.yt-hint { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 4px; color: var(--muted); font-size: 13px; }
+
 /* ---------- Звук и начало/край ---------- */
 .btn.unmute { background: var(--gold); border-color: var(--gold); color: var(--gold-ink); }
 .btn.unmute:hover { background: #F1BB52; }
@@ -459,6 +479,11 @@ dialog[open] { animation: rise .16s ease-out; }
   .play { width: 40px; height: 40px; }
   .volume { display: none; }
   .btn.unmute { padding: 0 8px; }
+  .result { grid-template-columns: 72px minmax(0, 1fr); }
+  .result img, .result .ph { width: 72px; height: 40px; }
+  .result .end { grid-column: 1 / -1; justify-content: flex-end; }
+  .results { max-height: 48dvh; }
+  .search-bar .btn { padding: 0 12px; }
   .tabs { padding: 4px 8px 0; overflow-x: auto; }
   .row2 { grid-template-columns: 1fr; }
   .duel-stage { gap: 10px; }

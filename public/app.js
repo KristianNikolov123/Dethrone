@@ -304,7 +304,8 @@
       el.innerHTML = '<div class="idle" style="margin-top:6px"><strong>Списъкът е празен</strong>Добави първата песен.<button class="btn small" data-open-add>Добави песен</button></div>';
       return;
     }
-    if (!list.length) { el.innerHTML = '<p class="empty">Няма песни, които да съвпадат.</p>'; return; }
+    const ytHint = q ? `<div class="yt-hint"><span>Не е в списъка?</span><button class="btn small" data-yt-search="${esc($('#search').value.trim())}">Търси в YouTube</button></div>` : '';
+    if (!list.length) { el.innerHTML = `<p class="empty">Няма такава песен в списъка.</p>${ytHint}`; return; }
     el.innerHTML = list.map((s) => {
       const onThrone = s.id === throneId;
       const waiting = busy.has(s.id);
@@ -322,7 +323,7 @@
           ${action}
         </div>
       </div>`;
-    }).join('');
+    }).join('') + ytHint;
   }
 
   function updateTimers() {
@@ -786,7 +787,100 @@
     $$('[data-addpanel]').forEach((p) => p.classList.toggle('hidden', p.dataset.addpanel !== name));
   }
   $$('[data-addtab]').forEach((b) => b.addEventListener('click', () => showAddTab(b.dataset.addtab)));
-  $('#add-btn').addEventListener('click', () => addDialog.showModal());
+  function openAdd(query) {
+    showAddTab('search');
+    if (!addDialog.open) addDialog.showModal();
+    const input = $('#yt-q');
+    if (query) { input.value = query; runSearch(query); }
+    else if (!searchResults.length) renderResults();
+    input.focus();
+    input.select();
+  }
+  $('#add-btn').addEventListener('click', () => openAdd());
+
+  // ---------- Търсене в YouTube ----------
+  let searchResults = [];
+  let searchState = 'idle';   // idle | loading | done | error | nokey
+  let searchError = '';
+  let searchSeq = 0;
+  const pending = new Set();  // клипове, които се добавят в момента
+
+  function resultSong(r) {
+    // Временна песен, за да може да се чуе, преди да е добавена
+    return { id: 'yt:' + r.videoId, type: 'youtube', videoId: r.videoId, title: r.title, artist: r.artist, startAt: 0, endAt: null, skips: [] };
+  }
+
+  function renderResults() {
+    const el = $('#yt-results');
+    if (searchState === 'loading') { el.innerHTML = '<div class="state">Търся…</div>'; return; }
+    if (searchState === 'nokey') {
+      el.innerHTML = `<div class="state"><strong>Търсенето още не е включено</strong>
+        Трябва ключ за YouTube във файла <code>.env</code> (стъпките са в README). Дотогава можеш да поставиш линк.
+        <div style="margin-top:10px"><button class="btn small" data-addtab-go="yt">Постави линк</button></div></div>`;
+      return;
+    }
+    if (searchState === 'error') { el.innerHTML = `<div class="state"><strong>Търсенето не мина</strong>${esc(searchError)}</div>`; return; }
+    if (searchState === 'idle') { el.innerHTML = '<div class="state">Напиши име на песен или изпълнител. Показват се само клипове, които могат да се пускат в сайта.</div>'; return; }
+    if (!searchResults.length) { el.innerHTML = '<div class="state">Нищо не излезе. Пробвай с име на изпълнител и песен.</div>'; return; }
+    const throneId = state?.throne?.song?.id;
+    el.innerHTML = searchResults.map((r, i) => {
+      let action;
+      if (pending.has(r.videoId)) action = '<button class="btn small" disabled>Добавя се…</button>';
+      else if (r.songId && r.songId === throneId) action = '<span class="tag-text gold">На трона</span>';
+      else if (r.songId) action = `<button class="btn small" data-challenge="${r.songId}">${throneId ? 'Предизвикай' : 'На трона'}</button>`;
+      else action = `<button class="btn small primary" data-add-result="${i}">Добави</button>`;
+      return `<div class="result">
+        ${r.thumb ? `<img src="${esc(r.thumb)}" alt="" loading="lazy">` : '<div class="ph"></div>'}
+        <div style="min-width:0"><div class="t" title="${esc(r.rawTitle)}">${esc(r.title)}</div>
+          <div class="s">${esc(r.artist)}${r.songId ? ', вече е в списъка' : ''}</div></div>
+        <div class="end">
+          <button class="ibtn" data-preview-result="${i}" title="Чуй" aria-label="Чуй ${esc(r.title)}">${ICON.play}</button>
+          ${action}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  async function runSearch(q) {
+    q = String(q || '').trim();
+    if (q.length < 2) return;
+    const seq = ++searchSeq;
+    searchState = 'loading';
+    renderResults();
+    try {
+      const r = await fetch('/api/yt-search?q=' + encodeURIComponent(q));
+      const j = await r.json().catch(() => ({}));
+      if (seq !== searchSeq) return;
+      if (r.status === 501 && j.needsKey) { searchState = 'nokey'; }
+      else if (!r.ok) { searchState = 'error'; searchError = j.error || 'Опитай пак.'; }
+      else { searchState = 'done'; searchResults = j.results || []; }
+    } catch {
+      if (seq !== searchSeq) return;
+      searchState = 'error'; searchError = 'Няма връзка със сървъра.';
+    }
+    renderResults();
+  }
+
+  $('#yt-search-form').addEventListener('submit', (e) => { e.preventDefault(); runSearch($('#yt-q').value); });
+
+  async function addResult(i) {
+    const r = searchResults[i];
+    if (!r || pending.has(r.videoId)) return;
+    pending.add(r.videoId);
+    renderResults();
+    try {
+      const res = await post('/api/songs', {
+        url: 'https://www.youtube.com/watch?v=' + r.videoId, title: r.title, artist: r.artist, addedBy: nick(), voterId,
+      });
+      indexSongs([res.song]);
+      r.songId = res.song.id;
+      if ($('#search-challenge').checked) await challenge(res.song.id);
+      else toast(`Добавена: ${res.song.title}`);
+      loadLibrary();
+    } catch (err) { toast(err.message, true); }
+    pending.delete(r.videoId);
+    renderResults();
+  }
 
   $('#yt-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1002,7 +1096,16 @@
     const b = e.target.closest('button');
     if (!b) return;
     if (b.hasAttribute('data-close')) { b.closest('dialog').close(); return; }
-    if (b.hasAttribute('data-open-add')) { addDialog.showModal(); return; }
+    if (b.hasAttribute('data-open-add')) { openAdd(); return; }
+    if (b.dataset.ytSearch !== undefined) { openAdd(b.dataset.ytSearch); return; }
+    if (b.dataset.addtabGo) { showAddTab(b.dataset.addtabGo); return; }
+    if (b.dataset.addResult !== undefined) { addResult(Number(b.dataset.addResult)); return; }
+    if (b.dataset.previewResult !== undefined) {
+      const r = searchResults[Number(b.dataset.previewResult)];
+      if (r) { preview(resultSong(r)); toast(`Пускам „${r.title}“`); }
+      return;
+    }
+    if (b.dataset.challenge && b.closest('#add-dialog')) { challenge(b.dataset.challenge); addDialog.close(); return; }
     if (b.dataset.artist) { openArtist(b.dataset.artist); return; }
     if (b.dataset.tip && artistDialog.open) artistDialog.close();
     if (b.dataset.preview && b.closest('dialog')) b.closest('dialog').close();

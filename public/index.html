@@ -143,17 +143,29 @@
 </div>
 
 <!-- ДОБАВЯНЕ НА ПЕСЕН -->
-<dialog id="add-dialog">
+<dialog id="add-dialog" class="wide">
   <div class="modal">
     <div class="modal-head">
       <h3>Добави песен</h3>
       <button type="button" class="close" data-close aria-label="Затвори"><svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
     </div>
     <div class="seg full">
-      <button class="seg-btn active" data-addtab="yt">От YouTube</button>
+      <button class="seg-btn active" data-addtab="search">Търси</button>
+      <button class="seg-btn" data-addtab="yt">Линк от YouTube</button>
       <button class="seg-btn" data-addtab="upload">Моя песен</button>
     </div>
-    <form id="yt-form" class="form" data-addpanel="yt">
+    <div class="add-search" data-addpanel="search">
+      <form id="yt-search-form" class="search-bar" role="search">
+        <div class="search big">
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><path d="M13 13l4 4"/></svg>
+          <input id="yt-q" name="q" placeholder="Песен или изпълнител" autocomplete="off" maxlength="100" aria-label="Търси песен">
+        </div>
+        <button class="btn primary" type="submit">Търси</button>
+      </form>
+      <label class="check"><input type="checkbox" id="search-challenge" checked> Предизвикай трона веднага след добавяне</label>
+      <div id="yt-results" class="results"></div>
+    </div>
+    <form id="yt-form" class="form hidden" data-addpanel="yt">
       <label class="field"><span>Линк към видеото</span><input name="url" required placeholder="https://www.youtube.com/watch?v=…"></label>
       <div class="row2">
         <label class="field"><span>Име на песента</span><input name="title" maxlength="120" placeholder="Попълва се само"></label>

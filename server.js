@@ -5,7 +5,18 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// Настройки от файла .env (например YOUTUBE_API_KEY=...). Променливите на средата имат предимство.
+try {
+  for (const line of fs.readFileSync(path.join(__dirname, '.env'), 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) {
+      process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
+  }
+} catch { /* няма .env */ }
+
 const PORT = Number(process.env.PORT || 3000);
+const YOUTUBE_API_KEY = (process.env.YOUTUBE_API_KEY || '').trim();
 const DUEL_SECONDS = Number(process.env.DUEL_SECONDS || 120);   // колко трае един дуел
 const BREAK_SECONDS = Number(process.env.BREAK_SECONDS || 20);  // пауза между дуелите
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 20);
@@ -148,6 +159,72 @@ function youtubeStart(input) {
     const s = parseSeconds(t);
     return Number.isFinite(s) && s > 0 ? s : null;
   } catch { return null; }
+}
+
+// ---------- Търсене в YouTube ----------
+// Официалното търсене на YouTube (YouTube Data API v3). Всяко търсене струва 100 от 10 000-те
+// безплатни единици на ден, затова резултатите се пазят 12 часа.
+const searchCache = new Map();
+const SEARCH_TTL = 12 * 3600 * 1000;
+
+function decodeEntities(s) {
+  return String(s || '')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+// „Rammstein - Deutschland (Official Video)“ → изпълнител „Rammstein“, песен „Deutschland“
+function splitTitle(rawTitle, channel) {
+  let title = decodeEntities(rawTitle)
+    .replace(/\s*[([](?:[^)\]]*\b(?:official|video|audio|lyrics?|visuali[sz]er|hd|hq|4k|remaster(?:ed)?|clip|videoclip|m\/v|mv)\b[^)\]]*)[)\]]/gi, '')
+    .replace(/\s*\|.*$/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  let artist = decodeEntities(channel).replace(/\s*-\s*Topic$/i, '').replace(/VEVO$/i, '').replace(/\s*Official$/i, '').trim();
+  const m = title.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+  if (m) { artist = m[1].trim(); title = m[2].trim(); }
+  title = title.replace(/^["“„']+|["“”']+$/g, '').trim();
+  return { title: title || decodeEntities(rawTitle), artist: artist || 'Неизвестен изпълнител' };
+}
+
+async function youtubeSearch(q) {
+  const key = q.toLowerCase();
+  const hit = searchCache.get(key);
+  if (hit && Date.now() - hit.at < SEARCH_TTL) return hit.results;
+  const url = (process.env.YOUTUBE_API_BASE || 'https://www.googleapis.com/youtube/v3') + '/search?' + new URLSearchParams({
+    part: 'snippet', type: 'video', videoEmbeddable: 'true', videoCategoryId: '10',
+    maxResults: '10', safeSearch: 'moderate', q, key: YOUTUBE_API_KEY,
+  });
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 6000);
+  let r;
+  try { r = await fetch(url, { signal: ctrl.signal }); }
+  catch { throw new HttpError(502, 'YouTube не отговаря. Провери връзката с интернет.'); }
+  finally { clearTimeout(t); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const reason = j?.error?.errors?.[0]?.reason || '';
+    if (reason === 'quotaExceeded' || reason === 'dailyLimitExceeded') {
+      throw new HttpError(429, 'Лимитът за търсене в YouTube за днес е изчерпан. Дотогава можеш да поставиш линк.');
+    }
+    if (r.status === 400 || r.status === 403) throw new HttpError(502, 'YouTube отказа ключа. Провери YOUTUBE_API_KEY във файла .env.');
+    throw new HttpError(502, 'Търсенето в YouTube не мина. Опитай пак.');
+  }
+  const results = (j.items || [])
+    .filter((it) => it.id && it.id.videoId)
+    .map((it) => {
+      const { title, artist } = splitTitle(it.snippet.title, it.snippet.channelTitle);
+      const th = it.snippet.thumbnails || {};
+      return {
+        videoId: it.id.videoId, title, artist,
+        rawTitle: decodeEntities(it.snippet.title), channel: decodeEntities(it.snippet.channelTitle),
+        thumb: (th.medium || th.default || {}).url || null,
+      };
+    });
+  searchCache.set(key, { at: Date.now(), results });
+  if (searchCache.size > 500) searchCache.delete(searchCache.keys().next().value);
+  return results;
 }
 
 // ---------- Автоматично откриване къде почва музиката ----------
@@ -482,6 +559,25 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, withViewer(v, () => ({ songs: [...db.songs].reverse().map(songView) })));
   }
 
+  // Търсене на песни в YouTube
+  if (m === 'GET' && p === '/api/yt-search') {
+    const q = clean(url.searchParams.get('q'), 100);
+    if (q.length < 2) throw new HttpError(400, 'Напиши поне две букви.');
+    if (!YOUTUBE_API_KEY) {
+      return sendJson(res, 501, {
+        error: 'Търсенето не е включено. Добави YOUTUBE_API_KEY във файла .env и рестартирай сървъра.',
+        needsKey: true,
+      });
+    }
+    const results = await youtubeSearch(q);
+    return sendJson(res, 200, {
+      results: results.map((r) => {
+        const s = db.songs.find((x) => x.videoId === r.videoId);
+        return { ...r, songId: s ? s.id : null };
+      }),
+    });
+  }
+
   // Начало и край на песента. Може да ги променя този, който е добавил песента.
   const trimMatch = p.match(/^\/api\/songs\/([a-f0-9]{12})\/trim$/);
   if (m === 'POST' && trimMatch) {
@@ -711,5 +807,8 @@ setTimeout(detectMissing, 2000);
 
 server.listen(PORT, () => {
   console.log(`👑 Dethrone върви на http://localhost:${PORT}`);
-  console.log(`   Дуел: ${DUEL_SECONDS} сек · Пауза: ${BREAK_SECONDS} сек`);
+  console.log(`   Дуел: ${DUEL_SECONDS} сек, пауза: ${BREAK_SECONDS} сек`);
+  console.log(YOUTUBE_API_KEY
+    ? '   Търсене в YouTube: включено'
+    : '   Търсене в YouTube: изключено (добави YOUTUBE_API_KEY във файла .env)');
 });
