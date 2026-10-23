@@ -1,4 +1,4 @@
-// BandCamper: една песен на трона, дуели решени от слушателите.
+// Dethrone: една песен на трона, дуели решени от слушателите.
 // Без външни зависимости: нужен е само Node.js 18+.
 const http = require('http');
 const fs = require('fs');
@@ -433,6 +433,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`👑 BandCamper върви на http://localhost:${PORT}`);
+  console.log(`👑 Dethrone върви на http://localhost:${PORT}`);
   console.log(`   Дуел: ${DUEL_SECONDS} сек · Пауза: ${BREAK_SECONDS} сек`);
 });
