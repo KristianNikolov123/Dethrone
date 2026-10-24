@@ -152,11 +152,17 @@ function biggestFanOf(artist) {
 
 // ---------- Акаунти: вход с Google и Discord ----------
 // Стандартен OAuth вход без външни пакети. Сесията е подписана бисквитка (HttpOnly), валидна 60 дни.
-const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+// Чете настройка и маха случайни интервали, нови редове и кавички около стойността (честа грешка при копиране).
+function envClean(name) {
+  const v = process.env[name];
+  if (!v) return undefined;
+  return v.trim().replace(/^(['"])([\s\S]*)\1$/, '$2').replace(/^['"]|['"]$/g, '').trim() || undefined;
+}
+const PUBLIC_URL = (envClean('PUBLIC_URL') || '').replace(/\/+$/, '');
 const PROVIDERS = {
   google: {
     label: 'Google',
-    clientId: process.env.GOOGLE_CLIENT_ID, secret: process.env.GOOGLE_CLIENT_SECRET,
+    clientId: envClean('GOOGLE_CLIENT_ID'), secret: envClean('GOOGLE_CLIENT_SECRET'),
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     userUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
@@ -166,7 +172,7 @@ const PROVIDERS = {
   },
   discord: {
     label: 'Discord',
-    clientId: process.env.DISCORD_CLIENT_ID, secret: process.env.DISCORD_CLIENT_SECRET,
+    clientId: envClean('DISCORD_CLIENT_ID'), secret: envClean('DISCORD_CLIENT_SECRET'),
     authUrl: 'https://discord.com/oauth2/authorize',
     tokenUrl: 'https://discord.com/api/oauth2/token',
     userUrl: 'https://discord.com/api/users/@me',
